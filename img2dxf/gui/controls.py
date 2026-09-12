@@ -1,0 +1,318 @@
+"""The parameter panel: Tk variables in, :class:`TraceParams` out."""
+
+from __future__ import annotations
+
+import tkinter as tk
+from tkinter import ttk
+from typing import Callable
+
+from ..params import DEFAULT_PRESET, DXF_VERSIONS, PRESETS, TraceParams
+
+MODES = ("otsu", "fixed", "adaptive", "posterize", "edges")
+
+_MODE_HELP = {
+    "otsu": "Automatic threshold. Best for logos, clipart and text.",
+    "fixed": "Manual threshold. Use when Otsu picks the wrong level.",
+    "adaptive": "Local threshold. For scans with uneven lighting.",
+    "posterize": "Tone bands, one layer each. For photographs.",
+    "edges": "Canny edge outlines. Detail without solid fills.",
+}
+
+#: Which controls matter for each mode, so the panel only ever offers sliders
+#: that actually do something.
+_MODE_FIELDS = {
+    "otsu": (),
+    "fixed": ("threshold",),
+    "adaptive": ("adaptive_block", "adaptive_c"),
+    "posterize": ("levels",),
+    "edges": ("canny_low", "canny_high", "edge_dilate"),
+}
+
+_HINT_COLOR = "#555555"
+
+
+class ControlPanel(ttk.Frame):
+    """Left-hand column of parameter widgets."""
+
+    def __init__(self, master, on_change: Callable[[], None]) -> None:
+        super().__init__(master, padding=(10, 8))
+        self._on_change = on_change
+        self._suspend = False
+        self._vars: dict[str, tk.Variable] = {}
+        self._mode_rows: dict[str, list[tk.Widget]] = {}
+
+        self._build()
+        self.apply_preset(DEFAULT_PRESET)
+
+    # -- construction ---------------------------------------------------
+
+    def _build(self) -> None:
+        self.columnconfigure(0, weight=1)
+
+        self.preset_var = tk.StringVar(value=DEFAULT_PRESET)
+        preset_box = ttk.Frame(self)
+        preset_box.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        preset_box.columnconfigure(1, weight=1)
+        ttk.Label(preset_box, text="Preset").grid(row=0, column=0, padx=(0, 6))
+        combo = ttk.Combobox(
+            preset_box,
+            textvariable=self.preset_var,
+            values=sorted(PRESETS),
+            state="readonly",
+        )
+        combo.grid(row=0, column=1, sticky="ew")
+        combo.bind(
+            "<<ComboboxSelected>>",
+            lambda _event: self.apply_preset(self.preset_var.get()),
+        )
+
+        self._trace_section(1)
+        self._cleanup_section(2)
+        self._vector_section(3)
+        self._size_section(4)
+        self._output_section(5)
+
+    def _trace_section(self, row: int) -> None:
+        frame = self._section("Tracing", row)
+
+        self._vars["mode"] = tk.StringVar(value="otsu")
+        ttk.Label(frame, text="Mode").grid(row=0, column=0, sticky="w")
+        mode_combo = ttk.Combobox(
+            frame,
+            textvariable=self._vars["mode"],
+            values=list(MODES),
+            state="readonly",
+        )
+        mode_combo.grid(row=0, column=1, columnspan=2, sticky="ew", pady=2)
+        mode_combo.bind("<<ComboboxSelected>>", lambda _e: self._mode_changed())
+
+        self._mode_hint = ttk.Label(
+            frame, text="", wraplength=230, foreground=_HINT_COLOR
+        )
+        self._mode_hint.grid(row=1, column=0, columnspan=3, sticky="w", pady=(0, 4))
+
+        mode_sliders = (
+            (2, "threshold", "Threshold", 0, 255, 0, 1),
+            (3, "adaptive_block", "Block size", 3, 101, 0, 2),
+            (4, "adaptive_c", "Bias", -20, 20, 0, 1),
+            (5, "levels", "Tone levels", 2, 8, 0, 1),
+            (6, "canny_low", "Edge low", 0, 255, 0, 1),
+            (7, "canny_high", "Edge high", 0, 255, 0, 1),
+            (8, "edge_dilate", "Edge width", 0, 10, 0, 1),
+        )
+        for slider_row, field, label, low, high, decimals, step in mode_sliders:
+            self._slider(
+                frame, slider_row, field, label, low, high,
+                decimals=decimals, step=step,
+            )
+            self._mode_rows[field] = list(frame.grid_slaves(row=slider_row))
+
+        self._checkbox(frame, 9, "invert", "Trace light areas instead")
+
+    def _cleanup_section(self, row: int) -> None:
+        frame = self._section("Cleanup", row)
+        self._slider(frame, 0, "denoise", "Denoise", 0, 15)
+        self._slider(frame, 1, "blur", "Blur", 0, 25)
+        self._slider(frame, 2, "close_px", "Bridge gaps", 0, 15)
+        self._slider(frame, 3, "open_px", "Remove specks", 0, 15)
+
+    def _vector_section(self, row: int) -> None:
+        frame = self._section("Vectors", row)
+        self._slider(frame, 0, "simplify_mm", "Tolerance (mm)", 0.0, 1.0, decimals=2)
+        self._slider(frame, 1, "min_area_mm2", "Min area (mm2)", 0.0, 25.0, decimals=1)
+        self._slider(frame, 2, "smooth", "Smoothing", 0, 3)
+        self._checkbox(
+            frame, 3, "keep_holes", "Keep holes (inner outlines)", default=True
+        )
+
+    def _size_section(self, row: int) -> None:
+        frame = self._section("Size", row)
+
+        self._vars["size_mode"] = tk.StringVar(value="fit")
+        for column, (label, value) in enumerate(
+            (("Fit to width", "fit"), ("Use image DPI", "dpi"))
+        ):
+            ttk.Radiobutton(
+                frame,
+                text=label,
+                value=value,
+                variable=self._vars["size_mode"],
+                command=self._changed,
+            ).grid(row=0, column=column, sticky="w", pady=2)
+
+        self._entry(frame, 1, "width_mm", "Width (mm)", "100")
+        self._entry(frame, 2, "dpi", "DPI", "96")
+
+        self._vars["origin"] = tk.StringVar(value="bottom-left")
+        ttk.Checkbutton(
+            frame,
+            text="Centre output on 0,0",
+            variable=self._vars["origin"],
+            onvalue="center",
+            offvalue="bottom-left",
+            command=self._changed,
+        ).grid(row=3, column=0, columnspan=3, sticky="w", pady=2)
+
+    def _output_section(self, row: int) -> None:
+        frame = self._section("Output", row)
+
+        self._vars["dxf_version"] = tk.StringVar(value="R2010")
+        ttk.Label(frame, text="DXF version").grid(row=0, column=0, sticky="w")
+        version = ttk.Combobox(
+            frame,
+            textvariable=self._vars["dxf_version"],
+            values=list(DXF_VERSIONS),
+            state="readonly",
+            width=10,
+        )
+        version.grid(row=0, column=1, sticky="w", pady=2)
+        version.bind("<<ComboboxSelected>>", lambda _e: self._changed())
+
+        self._entry(frame, 1, "layer_name", "Layer", "CUT")
+        ttk.Label(
+            frame,
+            text="R12 for older RDWorks/LaserCAD; R2010 for LightBurn.",
+            wraplength=230,
+            foreground=_HINT_COLOR,
+        ).grid(row=2, column=0, columnspan=3, sticky="w")
+
+    # -- widget helpers -------------------------------------------------
+
+    def _section(self, title: str, row: int) -> ttk.LabelFrame:
+        frame = ttk.LabelFrame(self, text=title, padding=(8, 4))
+        frame.grid(row=row, column=0, sticky="ew", pady=4)
+        frame.columnconfigure(1, weight=1)
+        return frame
+
+    def _slider(
+        self, parent, row, field, label, low, high, *, decimals=0, step=1
+    ) -> None:
+        is_float = decimals > 0
+        var: tk.Variable = tk.DoubleVar() if is_float else tk.IntVar()
+        self._vars[field] = var
+        readout = tk.StringVar()
+
+        def on_move(_value=None) -> None:
+            raw = var.get()
+            if not is_float:
+                snapped = int(round(raw / step) * step)
+                if snapped != raw:
+                    var.set(snapped)
+                raw = snapped
+            readout.set(f"{raw:.{decimals}f}")
+            self._changed()
+
+        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w")
+        ttk.Scale(
+            parent,
+            from_=low,
+            to=high,
+            variable=var,
+            orient="horizontal",
+            command=on_move,
+        ).grid(row=row, column=1, sticky="ew", padx=4, pady=1)
+        ttk.Label(parent, textvariable=readout, width=5, anchor="e").grid(
+            row=row, column=2, sticky="e"
+        )
+
+    def _checkbox(self, parent, row, field, label, *, default=False) -> None:
+        var = tk.BooleanVar(value=default)
+        self._vars[field] = var
+        ttk.Checkbutton(parent, text=label, variable=var, command=self._changed).grid(
+            row=row, column=0, columnspan=3, sticky="w", pady=2
+        )
+
+    def _entry(self, parent, row, field, label, default) -> None:
+        var = tk.StringVar(value=default)
+        self._vars[field] = var
+        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w")
+        entry = ttk.Entry(parent, textvariable=var, width=10)
+        entry.grid(row=row, column=1, sticky="w", pady=2)
+        # Retrace on Enter or focus-out rather than per keystroke, so a
+        # half-typed "1" in "100" never triggers a run at 1 mm.
+        entry.bind("<Return>", lambda _e: self._changed())
+        entry.bind("<FocusOut>", lambda _e: self._changed())
+
+    # -- state ----------------------------------------------------------
+
+    def _mode_changed(self) -> None:
+        mode = self._vars["mode"].get()
+        self._mode_hint.configure(text=_MODE_HELP.get(mode, ""))
+        visible = _MODE_FIELDS.get(mode, ())
+        for field, widgets in self._mode_rows.items():
+            for widget in widgets:
+                if field in visible:
+                    widget.grid()
+                else:
+                    widget.grid_remove()
+        self._changed()
+
+    def _changed(self) -> None:
+        if not self._suspend:
+            self._on_change()
+
+    def apply_preset(self, name: str) -> None:
+        """Load a preset into the widgets, re-tracing once at the end."""
+        params = PRESETS.get(name)
+        if params is not None:
+            self.set_params(params)
+
+    def set_params(self, params: TraceParams) -> None:
+        self._suspend = True
+        try:
+            for field, var in self._vars.items():
+                value = getattr(params, field, None)
+                if value is not None:
+                    var.set(value)
+        finally:
+            self._suspend = False
+        self._mode_changed()
+
+    def set_field(self, field: str, value) -> None:
+        """Set one control without triggering a re-trace."""
+        var = self._vars.get(field)
+        if var is None:
+            return
+        self._suspend = True
+        try:
+            var.set(value)
+        finally:
+            self._suspend = False
+
+    def params(self) -> TraceParams:
+        """Read the widgets back into a :class:`TraceParams`."""
+        values = {field: var.get() for field, var in self._vars.items()}
+        return TraceParams(
+            invert=bool(values["invert"]),
+            blur=int(values["blur"]),
+            denoise=int(values["denoise"]),
+            mode=values["mode"],
+            threshold=int(values["threshold"]),
+            adaptive_block=int(values["adaptive_block"]),
+            adaptive_c=int(values["adaptive_c"]),
+            levels=int(values["levels"]),
+            canny_low=int(values["canny_low"]),
+            canny_high=int(values["canny_high"]),
+            edge_dilate=int(values["edge_dilate"]),
+            close_px=int(values["close_px"]),
+            open_px=int(values["open_px"]),
+            simplify_mm=float(values["simplify_mm"]),
+            smooth=int(values["smooth"]),
+            min_area_mm2=float(values["min_area_mm2"]),
+            keep_holes=bool(values["keep_holes"]),
+            size_mode=values["size_mode"],
+            width_mm=_number(values["width_mm"], 100.0),
+            dpi=_number(values["dpi"], 96.0),
+            origin=values["origin"],
+            dxf_version=values["dxf_version"],
+            layer_name=str(values["layer_name"]).strip() or "CUT",
+        ).normalized()
+
+
+def _number(raw, fallback: float) -> float:
+    """Parse a text entry, falling back rather than throwing mid-edit."""
+    try:
+        value = float(str(raw).replace(",", "."))
+    except (TypeError, ValueError):
+        return fallback
+    return value if value > 0 else fallback

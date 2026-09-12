@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+
+# Local scratch: sample inputs and exported jobs
+*.dxf
+sample.png
+grad.png
+check_*.png
