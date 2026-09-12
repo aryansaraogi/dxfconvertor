@@ -55,10 +55,19 @@ def test_simplify_reduces_vertices(ring_image):
     assert coarse.vertex_count < detailed.vertex_count
 
 
-def test_smoothing_doubles_vertices_per_pass(square_image):
+def test_smoothing_leaves_a_square_alone(square_image):
+    """Every vertex of a square is a corner, so there is nothing to smooth."""
     plain = run(square_image, TraceParams(simplify_mm=0.5, smooth=0, fit_arcs=False))
     smoothed = run(square_image, TraceParams(simplify_mm=0.5, smooth=2, fit_arcs=False))
-    assert smoothed.vertex_count == plain.vertex_count * 4
+    assert smoothed.vertex_count == plain.vertex_count
+    assert smoothed.bounds.width == pytest.approx(plain.bounds.width, abs=0.01)
+
+
+def test_smoothing_still_works_on_curves(ring_image):
+    """The corner guard must not have quietly disabled smoothing."""
+    plain = run(ring_image, TraceParams(simplify_mm=0.5, smooth=0, fit_arcs=False))
+    smoothed = run(ring_image, TraceParams(simplify_mm=0.5, smooth=2, fit_arcs=False))
+    assert smoothed.vertex_count > plain.vertex_count
 
 
 def test_edges_mode_finds_outlines(square_image):

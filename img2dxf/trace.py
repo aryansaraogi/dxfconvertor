@@ -53,7 +53,7 @@ def trace_mask(
                 discarded.append(Path(dropped, [], level))
             continue
 
-        outer = _finish_ring(contour, epsilon_px, params.smooth)
+        outer = _finish_ring(contour, epsilon_px, params.smooth, params.corner_deg)
         if outer is None:
             continue
 
@@ -62,7 +62,9 @@ def trace_mask(
             child = hierarchy[index][2]
             while child != -1:
                 if cv2.contourArea(contours[child]) >= min_area_px:
-                    ring = _finish_ring(contours[child], epsilon_px, params.smooth)
+                    ring = _finish_ring(
+                        contours[child], epsilon_px, params.smooth, params.corner_deg
+                    )
                     if ring is not None:
                         holes.append(ring)
                 child = hierarchy[child][0]
@@ -73,7 +75,10 @@ def trace_mask(
 
 
 def _finish_ring(
-    contour: np.ndarray, epsilon_px: float, smooth_passes: int
+    contour: np.ndarray,
+    epsilon_px: float,
+    smooth_passes: int,
+    corner_deg: float = 40.0,
 ) -> np.ndarray | None:
     """Simplify then optionally smooth one contour into an ``(N, 2)`` array."""
     if epsilon_px > 0:
@@ -83,10 +88,85 @@ def _finish_ring(
     if len(ring) < _MIN_RING_POINTS:
         return None
 
-    for _ in range(smooth_passes):
-        ring = chaikin(ring)
+    if smooth_passes:
+        ring = smooth_ring(ring, smooth_passes, corner_deg)
 
     return ring
+
+
+def smooth_ring(ring: np.ndarray, passes: int, corner_deg: float) -> np.ndarray:
+    """Soften a ring's curves while holding its corners exactly.
+
+    Chaikin applied to a whole ring cuts every corner equally: one pass pulls a
+    true right angle in by a quarter of the adjoining edge, which is what
+    destroys the corners of letters like L, T and E. So the sharp turns are
+    pinned, and only the runs between them are smoothed.
+    """
+    corners = find_corners(ring, corner_deg)
+
+    # No corners: it is all curve, so smooth it as one closed loop.
+    if not corners.any():
+        for _ in range(passes):
+            ring = chaikin(ring)
+        return ring
+
+    indices = np.flatnonzero(corners)
+    pieces = []
+    for position, start in enumerate(indices):
+        end = indices[(position + 1) % len(indices)]
+        run = _slice_ring(ring, start, end)
+        for _ in range(passes):
+            run = chaikin_open(run)
+        # The run ends on the next corner, which the next run re-emits.
+        pieces.append(run[:-1])
+
+    return np.vstack(pieces)
+
+
+def find_corners(ring: np.ndarray, corner_deg: float) -> np.ndarray:
+    """Boolean mask of the vertices whose turn is sharper than ``corner_deg``."""
+    if corner_deg <= 0:
+        return np.ones(len(ring), dtype=bool)
+
+    incoming = ring - np.roll(ring, 1, axis=0)
+    outgoing = np.roll(ring, -1, axis=0) - ring
+
+    # Signed turn at each vertex, via the cross and dot products of the
+    # incoming and outgoing edges. Zero-length edges give a zero turn, which
+    # correctly reads as "not a corner".
+    cross = incoming[:, 0] * outgoing[:, 1] - incoming[:, 1] * outgoing[:, 0]
+    dot = (incoming * outgoing).sum(axis=1)
+    turn = np.degrees(np.abs(np.arctan2(cross, dot)))
+
+    return turn >= corner_deg
+
+
+def _slice_ring(ring: np.ndarray, start: int, end: int) -> np.ndarray:
+    """The run from ``start`` to ``end`` inclusive, wrapping if it has to."""
+    if end > start:
+        return ring[start : end + 1]
+    return np.vstack([ring[start:], ring[: end + 1]])
+
+
+def chaikin_open(points: np.ndarray) -> np.ndarray:
+    """Chaikin over an open run, holding both endpoints exactly.
+
+    The endpoints are the pinned corners, so they are emitted unchanged rather
+    than being cut like interior vertices.
+    """
+    if len(points) < 3:
+        return points
+
+    first = points[:-1]
+    second = points[1:]
+    q = first * 0.75 + second * 0.25
+    r = first * 0.25 + second * 0.75
+
+    interleaved = np.empty((len(q) * 2, 2), dtype=float)
+    interleaved[0::2] = q
+    interleaved[1::2] = r
+
+    return np.vstack([points[:1], interleaved[1:-1], points[-1:]])
 
 
 def chaikin(ring: np.ndarray) -> np.ndarray:

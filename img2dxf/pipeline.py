@@ -8,10 +8,12 @@ from pathlib import Path as FsPath
 import numpy as np
 
 from .arcfit import fit_bulges, fit_circle
+from .detail import resolve_detail, supersample
 from .geometry import Bounds, Path, bounds_of, pixels_per_mm, to_millimetres
 from .kerf import offset_paths
 from .params import TraceParams
 from .preprocess import binarize, load_image, prepare, to_grayscale
+from .straighten import straighten_paths
 from .tile import tile_paths
 from .trace import trace_mask
 from .transform import apply_transform
@@ -62,6 +64,9 @@ class TraceResult:
     tabbed: bool = False
     """Whether tabs will be cut into these paths on export."""
 
+    detail_factor: int = 1
+    """The supersampling factor this run used."""
+
     @property
     def arc_count(self) -> int:
         """Arcs and whole circles recovered by the fitter."""
@@ -98,6 +103,13 @@ def run(image_rgb: np.ndarray, params: TraceParams) -> TraceResult:
     # Rotate and crop first: every measurement below, sizing included, should
     # describe the piece the user is actually looking at.
     image_rgb = apply_transform(image_rgb, params)
+
+    # Supersample before anything reads the pixels. Because px_per_mm is then
+    # derived from the enlarged image, every millimetre-based tolerance keeps
+    # its exact physical meaning and no downstream stage needs adjusting.
+    factor = resolve_detail(image_rgb.shape[1], image_rgb.shape[0], params.detail)
+    image_rgb = supersample(image_rgb, factor)
+
     height_px, width_px = image_rgb.shape[:2]
     px_per_mm = pixels_per_mm(
         width_px, height_px,
@@ -128,11 +140,19 @@ def run(image_rgb: np.ndarray, params: TraceParams) -> TraceResult:
     paths = to_mm(paths)
     discarded = to_mm(discarded)
 
+    # Straighten before kerf: regularise the real artwork, then compensate it.
+    # A parallel offset of a straight edge is still straight, so the order
+    # costs nothing and keeps the two concerns separate.
+    if params.straighten_enabled:
+        paths = straighten_paths(
+            paths, params.straighten_mm, params.min_run_mm, px_per_mm, factor
+        )
+
     # Kerf before arcs: the arcs should describe the path the machine will
     # actually follow, not the one before compensation moved it.
     paths = offset_paths(paths, params.kerf_mm, params.kerf_side)
     if params.fit_arcs:
-        _fit_arcs(paths, params.simplify_mm, px_per_mm)
+        _fit_arcs(paths, params.simplify_mm, px_per_mm, factor)
 
     # Tiling last: each shape is fitted once and then copied, rather than
     # paying for the arc fit on every tile.
@@ -149,6 +169,7 @@ def run(image_rgb: np.ndarray, params: TraceParams) -> TraceResult:
         gray=gray,
         px_per_mm=px_per_mm,
         image_size_px=(width_px, height_px),
+        detail_factor=factor,
         bounds=bounds,
         fits_bed=_fits(bounds, bed),
         bed_size_mm=bed,
@@ -168,16 +189,23 @@ def _fits(bounds: Bounds | None, bed: tuple[float, float] | None) -> bool:
     return bounds.width <= bed[0] and bounds.height <= bed[1]
 
 
-def _fit_arcs(paths: list[Path], simplify_mm: float, px_per_mm: float) -> None:
+def _fit_arcs(
+    paths: list[Path], simplify_mm: float, px_per_mm: float, detail_factor: int = 1
+) -> None:
     """Attach arc data to every ring, in place.
 
-    The tolerance is the looser of the simplification tolerance and one source
-    pixel. The pixel floor is the important half: a traced circle is a
+    The tolerance is the looser of the simplification tolerance and one
+    *source* pixel. The pixel floor is the important half: a traced circle is a
     staircase of whole pixels, so it departs from any true circle by about
     half a pixel no matter how clean the artwork. Demanding a tighter fit than
     the image can express rejects every real circle.
+
+    Supersampling does not change that. An interpolated pixel carries no
+    information the original did not, so the floor is measured in source
+    pixels — `detail_factor` of them — not in the upscaled ones.
     """
-    tol = max(simplify_mm, 1.0 / px_per_mm if px_per_mm > 0 else 0.0, 0.02)
+    source_pixel_mm = detail_factor / px_per_mm if px_per_mm > 0 else 0.0
+    tol = max(simplify_mm, source_pixel_mm, 0.02)
 
     for path in paths:
         for index, ring in enumerate(path.rings()):

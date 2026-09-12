@@ -32,6 +32,8 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m img2dxf.cli part.png --width-mm 60 --tabs 4 --tab-mm 0.5
 .\.venv\Scripts\python.exe -m img2dxf.cli part.png --copies 3x2 --bed 400x300
 .\.venv\Scripts\python.exe -m img2dxf.cli logo.png -o logo.svg --width-mm 80
+.\.venv\Scripts\python.exe -m img2dxf.cli tiny.png --width-mm 40 --detail 4
+.\.venv\Scripts\python.exe -m img2dxf.cli art.png --width-mm 80 --no-straighten
 ```
 
 `--help` lists every flag. Any flag overrides the preset it is combined with.
@@ -48,6 +50,28 @@ python -m venv .venv
 
 Presets (`Logo / clipart`, `Photo`, `Line art / scan`, `Edge outline`) set sensible
 starting values for each.
+
+## Finish quality
+
+Three controls decide how cleanly an edge comes out.
+
+**Detail** is the important one. Thresholding rounds every outline to the pixel grid,
+and that — not the tolerance — is what limits edge quality: measured against the
+original artwork, the error is the same at a 0.0 mm tolerance as at 0.3 mm. Tracing an
+upscaled copy lifts that ceiling. *Auto* scales small images up and leaves detailed ones
+alone, which is right for almost everything; pin it to 1x–4x when you want to decide.
+
+**Straighten** flattens edges whose wobble is just the pixel staircase, so letter stems
+come out dead straight rather than faintly rippled. It tells a staircase from a curve by
+how the run *bends*, not how far it strays, so curves of any radius are left alone. Set
+it to 0 to trace edges exactly as found.
+
+**Corner angle** marks which turns count as corners. Smoothing never touches them, so
+the Smoothing slider is safe on text — it softens the bowl of an O without rounding off
+the corners of an L.
+
+On a test logo these together cut the error against the original artwork by **2.2x while
+using 60% fewer vertices** (195 to 76). Small logos gain most: a 155 px one improved 2.3x.
 
 ## Kerf compensation
 
@@ -126,6 +150,10 @@ of the piece you can see.
 - **Watch the vertex count** in the status bar. A few thousand is fine; tens of
   thousands will crawl on the machine. Raise *Tolerance*, or leave arc fitting on —
   it typically halves the count on curved artwork.
+- **Rough or rippled edges** on text and logos: leave *Detail* on Auto, or raise it.
+  This is the control that matters; tolerance alone cannot fix it.
+- **Stems that should be straight but waver**: raise *Straighten*. If artwork that is
+  genuinely curved comes out faceted, lower it or set it to 0.
 - **Speckles** in the output mean the mask is noisy: raise *Min area* to drop them, or
   *Remove specks* to clean the mask before tracing.
 - **Broken thin lines**: raise *Bridge gaps*, or use `adaptive` mode.

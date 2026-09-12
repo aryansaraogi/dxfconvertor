@@ -28,9 +28,9 @@ not have the dependencies installed.
 One-way data flow; each stage only knows about the one before it.
 
 ```
-apply_transform ─► prepare ─► binarize ─► trace_mask ─► to_millimetres ─► offset_paths ─► _fit_arcs ─► tile_paths
-   transform      preprocess  preprocess    trace          geometry          kerf          pipeline      tile
-                                      └────────── pipeline.run() orchestrates ──────────┘
+apply_transform ─► supersample ─► prepare ─► binarize ─► trace_mask ─► to_millimetres ─► straighten_paths ─► offset_paths ─► _fit_arcs ─► tile_paths
+   transform         detail        preprocess  preprocess    trace          geometry         straighten          kerf          pipeline      tile
+                                          └──────────────── pipeline.run() orchestrates ────────────────┘
 
 then, at write/draw time only:   split_ring (tabs) ─► write_dxf / write_svg / preview
 ```
@@ -42,6 +42,8 @@ gamma, sharpen) ahead of the existing denoise and blur.
 |---|---|
 | [params.py](img2dxf/params.py) | `TraceParams` — every knob, plus `PRESETS` and `normalized()` clamping |
 | [transform.py](img2dxf/transform.py) | rotate (expanding the canvas) then crop, by fractions |
+| [detail.py](img2dxf/detail.py) | supersampling factor and the upscale itself |
+| [straighten.py](img2dxf/straighten.py) | flatten runs that are structurally straight lines |
 | [preprocess.py](img2dxf/preprocess.py) | load, grayscale, denoise/blur, the five binarize modes, morphology. Always outputs `uint8` masks where 255 = burn |
 | [trace.py](img2dxf/trace.py) | `findContours` + hierarchy → `Path` objects, Douglas-Peucker, Chaikin smoothing; returns kept **and** discarded contours |
 | [geometry.py](img2dxf/geometry.py) | `Path`/`Bounds`, `pixels_per_mm`, `to_millimetres` (the Y-flip lives here) |
@@ -93,6 +95,72 @@ would break `bounds_of`, the kerf nesting rebuild, and the bed check. Instead
 `tabs.open_segments` is called at write and draw time by `dxfwrite`, `svgwrite` and
 `gui/preview` alike, so the preview shows exactly the gaps that get written. Add a new
 output format and it must call the same function.
+
+### Finish quality: why supersampling exists (`detail.py`)
+
+**Binarization is the ceiling on edge quality, not simplification.** Measured against a
+high-resolution ground truth, the error is identical at a 0.0 mm tolerance and at
+0.3 mm — thresholding quantises every outline to the pixel grid and nothing downstream
+recovers it. Tracing an upscaled copy is the only thing that helps, and it helps a lot:
+2.2x lower error with 60% fewer vertices on a test logo, 2.3x on a small one.
+
+Supersampling happens immediately after `apply_transform`, before anything reads the
+pixels. Because `pixels_per_mm` is then derived from the enlarged image, every
+millimetre-based tolerance keeps its exact physical meaning and no other stage needs
+adjusting. That is the whole reason it goes there.
+
+The one thing that *does* need the factor: **tolerance floors are measured in source
+pixels.** An interpolated pixel carries no information the original did not, so both
+`_fit_arcs` and `straighten.effective_tolerance` divide by `detail_factor / px_per_mm`,
+not `1 / px_per_mm`. Forget it and a supersampled circle stops being detected as a
+circle.
+
+Two approaches were measured and **rejected** — do not revisit them without new
+evidence. Moving the threshold to the 50%-coverage midpoint of an anti-aliased edge:
+Otsu already lands there (128 vs 128). Sub-pixel contour refinement from the grayscale
+gradient: 0.676 to 0.629 RMS, a fraction of supersampling's gain for much more
+machinery.
+
+### Straightening (`straighten.py`)
+
+A stem that looks wavy is not a curved segment — after Douglas-Peucker every segment is
+straight. It is *several* kept vertices zig-zagging, because the staircase departs from
+the true edge by more than the tolerance and simplification is obliged to keep them.
+
+Deciding a run is a straight line is therefore a separate judgement to a looser budget,
+and getting the discriminator right took three attempts:
+
+1. **An absolute bow limit alone** flattens curves. A gentle arc bows by `chord² / 8r`,
+   so a 7 mm chord on a 50 mm radius strays only 0.15 mm and gets flattened into facets.
+2. **Bow relative to length** is length-dependent, so short noisy runs never qualify and
+   straightening silently never fired at all on real text.
+3. **Turn coherence** (net turning over total turning) is scale- and radius-invariant —
+   0 for a staircase, 1 for an arc — but a staircase laid *over* a curve adds so much
+   total turning that a real curve's coherence is diluted below the threshold. That
+   chamfered the shoulders of O and G, which the numbers did not show and a rendered
+   picture did.
+
+What works is both: coherence, plus `bend_deg` — the angle between lines fitted to the
+run's two halves. Note it fits halves rather than summing per-vertex turns, because a
+staircase's alternating turns cancel only when there is an even number of them; an odd
+one leaves a whole phantom step of bend.
+
+Endpoints are projected onto a least-squares line through the whole run, not left where
+they were. Leaving them is simpler but worse: an endpoint sitting on a peak of the
+staircase drags the flattened edge off to one side, so the result is straight but
+displaced — that alone was the difference between straightening making accuracy worse
+and making it better.
+
+Rings that arc fitting already claimed are skipped, and a ring is never reduced below
+three points.
+
+### Corner-aware smoothing (`trace.py`)
+
+Plain Chaikin cuts every corner equally: one pass pulls a true right angle in by a
+quarter of the adjoining edge — 25 px on a 100 px square — which is what destroyed the
+corners of L, T and E. `smooth_ring` pins vertices whose turn exceeds `corner_deg`,
+splits the ring into runs between them, and smooths each run as an *open* polyline with
+fixed endpoints.
 
 ### Kerf (`kerf.py`)
 
@@ -230,6 +298,11 @@ job:
   fitting must not distort or hallucinate curves.
 - `test_cut_length_is_perimeter_minus_the_gaps` — tabs must remove exactly the material
   asked for, no more.
+- `test_finishing_is_more_accurate_with_fewer_vertices` — the headline claim, measured
+  against the artwork rather than asserted.
+- `test_a_noisy_curve_is_not_chamfered` and `test_curves_are_never_flattened` — the two
+  ways straightening can eat a curve.
+- `test_supersampled_circle_is_still_recognised` — the source-pixel tolerance floor.
 - `test_y_axis_is_flipped_relative_to_dxf` and `test_unflipping_the_svg_reproduces_the_dxf`
   — the SVG axis flip.
 - `test_reference_scaling_survives_the_whole_pipeline` — declaring a feature's real size
@@ -248,6 +321,15 @@ window and errors during teardown.
 When you write both the code and its tests, mutate the code and check the test fails.
 `test_y_axis_is_flipped_relative_to_dxf` passed against a deliberately broken flip in
 its first form, which is how the two-shape version came about.
+
+Numbers are not enough on their own either. The straightener's chamfering of O and G
+passed every numeric check — the RMS error barely moved — and was obvious the moment the
+outline was rendered. When changing how geometry is traced, draw it and look.
+
+Measuring trace accuracy: compare against the artwork traced at 8x, use point-to-*segment*
+distance (point-to-vertex punishes the goal of using fewer, better placed points), and
+expand fitted arcs first or the measurement cuts straight chords across curves the file
+actually draws correctly. `tests/test_finishing.py` has the harness.
 
 ## Conventions
 

@@ -33,6 +33,16 @@ class TraceParams:
     crop: tuple[float, float, float, float] | None = None
     """``(left, top, right, bottom)`` as fractions of the rotated image."""
 
+    # --- resolution ----------------------------------------------------
+    detail: int = 0
+    """Supersampling factor applied before thresholding. 0 picks one.
+
+    Thresholding quantises every outline to the pixel grid, and that — not the
+    simplification tolerance — is what limits how clean a traced edge can be.
+    Tracing an upscaled image lifts that ceiling: on a small logo it cuts the
+    error against the original artwork by roughly five times.
+    """
+
     # --- image adjustments ---------------------------------------------
     auto_levels: bool = False
     """Stretch the tonal range to fill 0-255, ignoring outlier pixels."""
@@ -90,7 +100,20 @@ class TraceParams:
     """Douglas-Peucker tolerance. Larger = fewer vertices, blockier curves."""
 
     smooth: int = 0
-    """Chaikin corner-rounding passes, 0-3. Softens staircase edges."""
+    """Corner-aware smoothing passes, 0-3. Softens staircase edges."""
+
+    corner_deg: float = 40.0
+    """Turns sharper than this are corners, and smoothing leaves them alone."""
+
+    straighten_mm: float = 0.15
+    """Flatten runs that stray less than this from their own chord. 0 disables.
+
+    Deliberately looser than `simplify_mm`: it is a separate judgement that a
+    run is structurally a straight line, not a tighter accuracy budget.
+    """
+
+    min_run_mm: float = 2.0
+    """Only runs at least this long are considered for straightening."""
 
     min_area_mm2: float = 0.5
     """Drop contours smaller than this. The despeckle control."""
@@ -144,6 +167,10 @@ class TraceParams:
     layer_name: str = "CUT"
 
     @property
+    def straighten_enabled(self) -> bool:
+        return self.straighten_mm > 0 and self.min_run_mm > 0
+
+    @property
     def tabs_enabled(self) -> bool:
         """Tabs need both a count and a width to do anything."""
         return self.tab_count > 0 and self.tab_mm > 0
@@ -186,6 +213,10 @@ class TraceParams:
             edge_dilate=_clamp(int(self.edge_dilate), 0, 20),
             close_px=_clamp(int(self.close_px), 0, 50),
             open_px=_clamp(int(self.open_px), 0, 50),
+            detail=_clamp(int(self.detail), 0, 4),
+            corner_deg=max(0.0, min(180.0, float(self.corner_deg))),
+            straighten_mm=max(0.0, float(self.straighten_mm)),
+            min_run_mm=max(0.0, float(self.min_run_mm)),
             simplify_mm=max(0.0, float(self.simplify_mm)),
             smooth=_clamp(int(self.smooth), 0, 3),
             min_area_mm2=max(0.0, float(self.min_area_mm2)),
@@ -224,11 +255,15 @@ def _odd_at_least(value: int, floor: int) -> int:
 #: Starting points that get a usable result without touching every slider.
 PRESETS: dict[str, TraceParams] = {
     "Logo / clipart": TraceParams(
-        mode="otsu", simplify_mm=0.05, min_area_mm2=0.5, smooth=0
+        mode="otsu", simplify_mm=0.05, min_area_mm2=0.5, smooth=0,
+        straighten_mm=0.15,
     ),
     "Photo": TraceParams(
         mode="posterize", levels=3, blur=3, simplify_mm=0.15,
         min_area_mm2=2.0, smooth=1,
+        # Photographs have no straight edges to recover; forcing runs flat
+        # would only flatten tonal boundaries that are genuinely curved.
+        straighten_mm=0.0,
     ),
     "Line art / scan": TraceParams(
         mode="adaptive", adaptive_block=31, adaptive_c=7, denoise=3,

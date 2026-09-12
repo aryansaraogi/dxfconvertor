@@ -35,6 +35,7 @@ _HINT_COLOR = "#555555"
 _NOT_FROM_PRESETS = frozenset(
     {
         "rotate_deg",
+        "detail",
         "copies_x",
         "copies_y",
         "tile_gap_mm",
@@ -100,6 +101,7 @@ class ControlPanel(ttk.Frame):
         frame = self._section("Image", row)
 
         self._slider(frame, 0, "rotate_deg", "Rotate", -180, 180, decimals=1)
+        self._detail_row(frame, 4)
 
         buttons = ttk.Frame(frame)
         buttons.grid(row=1, column=0, columnspan=3, sticky="w", pady=(2, 0))
@@ -116,6 +118,28 @@ class ControlPanel(ttk.Frame):
             text="Drag on the preview with Crop enabled to frame the artwork.",
             wraplength=240, foreground=_HINT_COLOR,
         ).grid(row=3, column=0, columnspan=3, sticky="w")
+
+    def _detail_row(self, frame, row: int) -> None:
+        """Supersampling. Auto is the default and suits almost everything."""
+        self._vars["detail"] = tk.IntVar(value=0)
+        ttk.Label(frame, text="Detail").grid(row=row, column=0, sticky="w")
+
+        box = ttk.Frame(frame)
+        box.grid(row=row, column=1, columnspan=2, sticky="w", pady=2)
+        for label, value in (("Auto", 0), ("1x", 1), ("2x", 2), ("3x", 3), ("4x", 4)):
+            ttk.Radiobutton(
+                box, text=label, value=value,
+                variable=self._vars["detail"], command=self._changed,
+            ).pack(side="left")
+
+        ttk.Label(
+            frame,
+            text=(
+                "Traces an upscaled copy. Thresholding is what limits edge "
+                "quality, and this is the only control that lifts it."
+            ),
+            wraplength=240, foreground=_HINT_COLOR,
+        ).grid(row=row + 1, column=0, columnspan=3, sticky="w")
 
     def _nudge_rotation(self, delta: float | None) -> None:
         """Step by 90 degrees, or reset to upright when ``delta`` is None."""
@@ -248,9 +272,23 @@ class ControlPanel(ttk.Frame):
         self._slider(frame, 0, "simplify_mm", "Tolerance (mm)", 0.0, 1.0, decimals=2)
         self._slider(frame, 1, "min_area_mm2", "Min area (mm2)", 0.0, 25.0, decimals=1)
         self._slider(frame, 2, "smooth", "Smoothing", 0, 3)
-        self._checkbox(
-            frame, 3, "keep_holes", "Keep holes (inner outlines)", default=True
+        self._slider(frame, 3, "corner_deg", "Corner angle", 0, 90, decimals=0)
+        self._slider(
+            frame, 4, "straighten_mm", "Straighten (mm)", 0.0, 1.0, decimals=2
         )
+        self._slider(frame, 5, "min_run_mm", "Min run (mm)", 0.0, 20.0, decimals=1)
+        self._checkbox(
+            frame, 6, "keep_holes", "Keep holes (inner outlines)", default=True
+        )
+        ttk.Label(
+            frame,
+            text=(
+                "Straighten flattens edges whose wobble is pixel noise, and "
+                "leaves anything that curves. Turns sharper than the corner "
+                "angle are never smoothed."
+            ),
+            wraplength=240, foreground=_HINT_COLOR,
+        ).grid(row=7, column=0, columnspan=3, sticky="w")
 
     def _size_section(self, row: int) -> None:
         frame = self._section("Size", row)
@@ -426,6 +464,10 @@ class ControlPanel(ttk.Frame):
         """Read the widgets back into a :class:`TraceParams`."""
         values = {field: var.get() for field, var in self._vars.items()}
         return TraceParams(
+            detail=int(values["detail"]),
+            corner_deg=float(values["corner_deg"]),
+            straighten_mm=float(values["straighten_mm"]),
+            min_run_mm=float(values["min_run_mm"]),
             auto_levels=bool(values["auto_levels"]),
             brightness=int(values["brightness"]),
             contrast=float(values["contrast"]),

@@ -129,7 +129,7 @@ def _fits_circle(window: np.ndarray, tol: float) -> bool:
     Whether the finished run curves enough to be worth an arc at all is
     decided once, at acceptance, in :func:`_arc_bulge`.
     """
-    chord, _ = _chord_and_bow(window)
+    chord, _ = chord_and_bow(window)
     if chord < tol:
         return False
 
@@ -150,8 +150,12 @@ def _fits_circle(window: np.ndarray, tol: float) -> bool:
     return bool(deviation.max() <= tol)
 
 
-def _chord_and_bow(window: np.ndarray) -> tuple[float, float]:
-    """Length of the run's chord, and how far it bows away from that chord."""
+def chord_and_bow(window: np.ndarray) -> tuple[float, float]:
+    """Length of the run's chord, and how far it bows away from that chord.
+
+    Shared with :mod:`img2dxf.straighten`, which asks the same question of a
+    run for a different reason: whether it is straight enough to flatten.
+    """
     start = window[0]
     span = window[-1] - start
     chord = float(math.hypot(span[0], span[1]))
@@ -175,7 +179,7 @@ def _arc_bulge(
 
     first = points[start]
     last = points[end]
-    chord, bow = _chord_and_bow(points[start : end + 1])
+    chord, bow = chord_and_bow(points[start : end + 1])
     if chord < tol:
         return None
 

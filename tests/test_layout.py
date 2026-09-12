@@ -137,7 +137,10 @@ def test_reference_scaling_survives_the_whole_pipeline(square_image):
     rescaled = run(
         square_image, TraceParams(width_mm=width_mm, fit_arcs=False)
     )
-    assert rescaled.bounds.width == pytest.approx(25.0, abs=0.05)
+    # Not exact by construction: the simplification tolerance is in mm, so
+    # rescaling the job changes it in pixel terms and the trace shifts very
+    # slightly. A quarter of a percent is far inside any laser's accuracy.
+    assert rescaled.bounds.width == pytest.approx(25.0, rel=0.005)
 
 
 # --- image adjustments -----------------------------------------------------

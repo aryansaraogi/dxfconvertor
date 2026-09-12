@@ -37,6 +37,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="crop to these fractions of the image, e.g. 0,0,0.5,1 for the left half",
     )
 
+    quality = parser.add_argument_group("finishing")
+    quality.add_argument(
+        "--detail", type=int, choices=[0, 1, 2, 3, 4],
+        help="supersampling before thresholding; 0 (default) picks one",
+    )
+    quality.add_argument(
+        "--straighten", type=float, dest="straighten_mm",
+        help="flatten runs straying less than this (mm); 0 disables",
+    )
+    quality.add_argument(
+        "--no-straighten", action="store_true",
+        help="leave traced edges exactly as found",
+    )
+    quality.add_argument(
+        "--min-run", type=float, dest="min_run_mm",
+        help="shortest run worth straightening, mm",
+    )
+    quality.add_argument(
+        "--corner-deg", type=float, dest="corner_deg",
+        help="turns sharper than this are corners and are never smoothed",
+    )
+
     tone = parser.add_argument_group("image adjustments")
     tone.add_argument(
         "--auto-levels", action="store_true", help="stretch the tonal range to 0-255"
@@ -125,7 +147,7 @@ def params_from_args(args: argparse.Namespace) -> TraceParams:
         "simplify_mm", "smooth", "min_area_mm2", "width_mm", "height_mm",
         "dxf_version", "layer_name", "rotate_deg", "kerf_mm", "kerf_side",
         "brightness", "contrast", "gamma", "sharpen", "tab_count", "tab_mm",
-        "tile_gap_mm",
+        "tile_gap_mm", "detail", "straighten_mm", "min_run_mm", "corner_deg",
     )
     overrides = {
         name: getattr(args, name)
@@ -143,6 +165,8 @@ def params_from_args(args: argparse.Namespace) -> TraceParams:
         overrides["fit_arcs"] = False
     if args.auto_levels:
         overrides["auto_levels"] = True
+    if args.no_straighten:
+        overrides["straighten_mm"] = 0.0
     if args.crop:
         overrides["crop"] = _parse_crop(args.crop)
     if args.copies:
