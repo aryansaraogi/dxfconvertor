@@ -81,6 +81,7 @@ def test_worker_delivers_a_result(root, square_image):
     assert delivered and delivered[0].path_count == 1
     # The progress indicator must be switched on and then off again.
     assert busy == [True, False]
+    worker.stop()
 
 
 def test_preview_renders_each_view(root, ring_image):
@@ -304,6 +305,7 @@ def loaded_app(root, square_image, tmp_path):
     app.open_image(str(path))
     assert pump(root, app), "the worker never delivered a result"
     yield app
+    app._worker.stop()
     app._progress.stop()
 
 
@@ -393,3 +395,19 @@ def test_layout_fields_survive_a_preset_change(root):
     assert params.tab_count == 4
     assert params.copies_x == 3
     assert params.mode == "posterize"  # the preset still applied
+
+
+def test_worker_stops_cleanly(root, square_image):
+    """A stopped worker must leave nothing scheduled against the widget."""
+    from img2dxf.gui.worker import TraceWorker
+    from img2dxf.params import TraceParams
+
+    worker = TraceWorker(root, lambda r, p: None, lambda e: None)
+    worker.request(square_image, TraceParams())
+    worker.stop()
+
+    assert worker._poll_id is None
+    assert worker._debounce_id is None
+    # Further requests are ignored rather than rescheduling anything.
+    worker.request(square_image, TraceParams())
+    assert worker._poll_id is None

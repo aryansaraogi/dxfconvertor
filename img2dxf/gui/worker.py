@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import queue
 import threading
+import tkinter as tk
 from dataclasses import dataclass
 from typing import Callable
 
@@ -53,11 +54,37 @@ class TraceWorker:
         self._debounce_id: str | None = None
         self._token = 0
         self._lock = threading.Lock()
-        self._widget.after(POLL_MS, self._drain)
+        self._stopped = False
+        self._poll_id: str | None = None
+        self._schedule_poll()
+
+    def stop(self) -> None:
+        """Stop polling, so nothing is left scheduled against a dead widget.
+
+        Tk raises "invalid command name" if an ``after`` callback fires after
+        its widget is destroyed, which surfaces as a spurious error on exit.
+        """
+        self._stopped = True
+        for pending in (self._poll_id, self._debounce_id):
+            if pending is not None:
+                try:
+                    self._widget.after_cancel(pending)
+                except tk.TclError:
+                    pass
+        self._poll_id = self._debounce_id = None
+
+    def _schedule_poll(self) -> None:
+        if self._stopped:
+            return
+        try:
+            self._poll_id = self._widget.after(POLL_MS, self._drain)
+        except tk.TclError:
+            # The widget is already gone; nothing left to poll for.
+            self._stopped = True
 
     def request(self, image: np.ndarray | None, params: TraceParams) -> None:
         """Schedule a trace, replacing any request not yet started."""
-        if image is None:
+        if image is None or self._stopped:
             return
         with self._lock:
             self._token += 1
@@ -68,6 +95,8 @@ class TraceWorker:
 
     def _start(self) -> None:
         self._debounce_id = None
+        if self._stopped:
+            return
         with self._lock:
             job = self._pending
             self._pending = None
@@ -85,6 +114,10 @@ class TraceWorker:
 
     def _drain(self) -> None:
         """Deliver the newest finished result and discard stale ones."""
+        self._poll_id = None
+        if self._stopped:
+            return
+
         latest = None
         try:
             while True:
@@ -102,7 +135,7 @@ class TraceWorker:
                 else:
                     self._on_result(result, params)
 
-        self._widget.after(POLL_MS, self._drain)
+        self._schedule_poll()
 
     def _set_busy(self, busy: bool) -> None:
         """Report start and finish once each, not per superseded job.
@@ -110,7 +143,7 @@ class TraceWorker:
         A dragged slider fires many jobs; the indicator should stay on for the
         whole drag rather than flickering between them.
         """
-        if busy == self._busy:
+        if busy == self._busy or self._stopped:
             return
         self._busy = busy
         if self._on_busy is not None:

@@ -73,7 +73,14 @@ class App(ttk.Frame):
         self._build()
         self._worker = TraceWorker(self, self._on_result, self._on_error, self._on_busy)
         self._enable_drop()
+        self.master.protocol("WM_DELETE_WINDOW", self.close)
         self.pack(fill="both", expand=True)
+
+    def close(self) -> None:
+        """Shut down cleanly, so no timer fires against a destroyed widget."""
+        self._worker.stop()
+        self._progress.stop()
+        self.master.destroy()
 
     # -- layout ---------------------------------------------------------
 
