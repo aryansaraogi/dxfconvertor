@@ -48,14 +48,16 @@ def test_posterize_emits_one_level_per_tone(gradient_image):
 
 
 def test_simplify_reduces_vertices(ring_image):
-    detailed = run(ring_image, TraceParams(simplify_mm=0.01))
-    coarse = run(ring_image, TraceParams(simplify_mm=1.0))
+    # Arc fitting off: it would collapse both rings to CIRCLE entities and
+    # leave no vertices to compare.
+    detailed = run(ring_image, TraceParams(simplify_mm=0.01, fit_arcs=False))
+    coarse = run(ring_image, TraceParams(simplify_mm=1.0, fit_arcs=False))
     assert coarse.vertex_count < detailed.vertex_count
 
 
 def test_smoothing_doubles_vertices_per_pass(square_image):
-    plain = run(square_image, TraceParams(simplify_mm=0.5, smooth=0))
-    smoothed = run(square_image, TraceParams(simplify_mm=0.5, smooth=2))
+    plain = run(square_image, TraceParams(simplify_mm=0.5, smooth=0, fit_arcs=False))
+    smoothed = run(square_image, TraceParams(simplify_mm=0.5, smooth=2, fit_arcs=False))
     assert smoothed.vertex_count == plain.vertex_count * 4
 
 

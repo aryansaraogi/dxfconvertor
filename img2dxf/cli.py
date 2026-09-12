@@ -26,6 +26,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--preset", choices=sorted(PRESETS), help="start from a named preset"
     )
 
+    frame = parser.add_argument_group("framing")
+    frame.add_argument(
+        "--rotate", type=float, dest="rotate_deg",
+        help="rotate the image by this many degrees before tracing",
+    )
+    frame.add_argument(
+        "--crop", metavar="L,T,R,B",
+        help="crop to these fractions of the image, e.g. 0,0,0.5,1 for the left half",
+    )
+
     shape = parser.add_argument_group("tracing")
     shape.add_argument(
         "--mode",
@@ -54,6 +64,20 @@ def build_parser() -> argparse.ArgumentParser:
     size.add_argument("--dpi", type=float, help="size from image resolution instead of --width-mm")
     size.add_argument("--center", action="store_true", help="centre the output on 0,0")
 
+    machine = parser.add_argument_group("machine")
+    machine.add_argument(
+        "--kerf", type=float, dest="kerf_mm",
+        help="beam width in mm; paths are offset by half of it",
+    )
+    machine.add_argument(
+        "--kerf-side", choices=["none", "outside", "inside"], dest="kerf_side",
+        help="outside keeps the part's size, inside keeps the hole's",
+    )
+    machine.add_argument(
+        "--no-arcs", action="store_true",
+        help="keep every curve as straight segments instead of fitting arcs",
+    )
+
     out = parser.add_argument_group("output")
     out.add_argument("--dxf-version", choices=DXF_VERSIONS, help="DXF flavour to write")
     out.add_argument("--layer", dest="layer_name", help="base layer name")
@@ -67,7 +91,7 @@ def params_from_args(args: argparse.Namespace) -> TraceParams:
     direct = (
         "mode", "threshold", "levels", "blur", "denoise", "close_px", "open_px",
         "simplify_mm", "smooth", "min_area_mm2", "width_mm", "height_mm",
-        "dxf_version", "layer_name",
+        "dxf_version", "layer_name", "rotate_deg", "kerf_mm", "kerf_side",
     )
     overrides = {
         name: getattr(args, name)
@@ -81,11 +105,31 @@ def params_from_args(args: argparse.Namespace) -> TraceParams:
         overrides["keep_holes"] = False
     if args.center:
         overrides["origin"] = "center"
+    if args.no_arcs:
+        overrides["fit_arcs"] = False
+    if args.crop:
+        overrides["crop"] = _parse_crop(args.crop)
+    # A kerf without a side would silently do nothing; assume the common case.
+    if args.kerf_mm and not args.kerf_side:
+        overrides["kerf_side"] = "outside"
     if args.dpi is not None:
         overrides["size_mode"] = "dpi"
         overrides["dpi"] = args.dpi
 
     return replace(params, **overrides)
+
+
+def _parse_crop(text: str) -> tuple[float, float, float, float]:
+    parts = text.replace(" ", "").split(",")
+    if len(parts) != 4:
+        raise argparse.ArgumentTypeError(
+            "--crop needs four comma-separated fractions: left,top,right,bottom"
+        )
+    try:
+        left, top, right, bottom = (float(value) for value in parts)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"--crop values must be numbers: {exc}")
+    return left, top, right, bottom
 
 
 def main(argv: list[str] | None = None) -> int:

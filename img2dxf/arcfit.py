@@ -192,37 +192,60 @@ def _arc_bulge(
     if abs(sweep) < 1e-6 or abs(sweep) >= 2 * math.pi:
         return None
 
-    # Final gate: measure the arc that will actually be written against every
-    # point it replaces. The circle fit only says the points sit near the
-    # circle, not that they sit near the *arc* — an arc spanning the short way
-    # round leaves points on the long way round uncovered, which is how a
-    # letter's curve ends up short-circuited by a bulge.
-    if _arc_error(points[start : end + 1], cx, cy, radius, sweep) > tol:
-        return None
-
     # bulge = tan(sweep / 4) is the DXF definition; the sign carries the
     # direction, positive being counter-clockwise.
-    return math.tan(sweep / 4.0)
+    bulge = math.tan(sweep / 4.0)
+
+    # Final gate: measure against the arc that will actually be written, not
+    # against the least-squares circle. DXF rebuilds an arc through its two
+    # endpoints, and those endpoints carry their own fitting error, so the
+    # realized arc is a slightly different circle from the fitted one — and it
+    # is the realized one the machine follows.
+    if _arc_error(points[start : end + 1], bulge) > tol:
+        return None
+
+    return bulge
 
 
-def _arc_error(
-    run: np.ndarray, cx: float, cy: float, radius: float, sweep: float
-) -> float:
+def _realized_arc(
+    first: np.ndarray, last: np.ndarray, bulge: float
+) -> tuple[np.ndarray, float, float] | None:
+    """Rebuild the arc a DXF reader derives from two points and a bulge."""
+    included = 4.0 * math.atan(bulge)
+    span = last - first
+    chord = float(math.hypot(span[0], span[1]))
+    half = math.sin(included / 2.0)
+    if chord <= 0 or abs(half) < 1e-12:
+        return None
+
+    radius = chord / (2.0 * half)
+    direction = span / chord
+    normal = np.array([-direction[1], direction[0]])
+    centre = (first + last) / 2.0 + normal * (radius * math.cos(included / 2.0))
+    return centre, abs(radius), included
+
+
+def _arc_error(run: np.ndarray, bulge: float) -> float:
     """Greatest distance from any point of ``run`` to the arc replacing it.
 
-    A point whose angle falls inside the arc's span is off by its radial
+    A point whose angle falls within the arc's span is off by its radial
     error; one outside the span is off by its distance to the nearer endpoint,
-    since that is where the arc stops.
+    because that is where the arc stops.
     """
-    offsets = run - np.array([cx, cy])
+    arc = _realized_arc(run[0], run[-1], bulge)
+    if arc is None:
+        return float("inf")
+    centre, radius, included = arc
+
+    offsets = run - centre
     angles = np.arctan2(offsets[:, 1], offsets[:, 0])
     radial = np.abs(np.hypot(offsets[:, 0], offsets[:, 1]) - radius)
 
-    start_angle = angles[0]
     # Progress of each point around the arc, measured in the sweep direction.
-    travelled = (angles - start_angle) * (1.0 if sweep >= 0 else -1.0)
-    travelled = travelled % (2 * math.pi)
-    inside = travelled <= abs(sweep) + 1e-9
+    travelled = ((angles - angles[0]) * (1.0 if included >= 0 else -1.0)) % (
+        2 * math.pi
+    )
+    inside = travelled <= abs(included) + 1e-9
 
     to_ends = np.minimum(
         np.linalg.norm(run - run[0], axis=1),

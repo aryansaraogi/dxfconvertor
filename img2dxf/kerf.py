@@ -23,6 +23,12 @@ _SCALE = 1000.0
 #: crumbs, not features the machine could cut.
 _MIN_AREA_MM2 = 1e-4
 
+#: How finely Clipper may approximate the rounded corners it adds. Its default
+#: works out to a quarter of a micron here, which buries a simple outline under
+#: thousands of points; a hundredth of a millimetre is already finer than any
+#: laser can position.
+_ARC_TOLERANCE_MM = 0.01
+
 
 def offset_paths(paths: list[Path], kerf_mm: float, side: str) -> list[Path]:
     """Return ``paths`` offset by half of ``kerf_mm``.
@@ -51,6 +57,7 @@ def offset_paths(paths: list[Path], kerf_mm: float, side: str) -> list[Path]:
 
 def _offset_group(paths: list[Path], delta: float, level: int) -> list[Path]:
     offset = pyclipper.PyclipperOffset()
+    offset.ArcTolerance = _ARC_TOLERANCE_MM * _SCALE
     added = False
 
     for path in paths:

@@ -54,7 +54,10 @@ def test_y_flip_survives_export(offset_square_image, tmp_path):
 
 
 def test_ring_writes_outer_and_hole_as_closed_polylines(ring_image, tmp_path):
-    _, doc = export(ring_image, TraceParams(min_area_mm2=0.1), tmp_path)
+    # With arc fitting on these rings become CIRCLE entities; this test is
+    # about the polyline path, so it is pinned off.
+    params = TraceParams(min_area_mm2=0.1, fit_arcs=False)
+    _, doc = export(ring_image, params, tmp_path)
     entities = polylines(doc)
     assert len(entities) == 2
     assert all(e.closed if e.dxftype() == "LWPOLYLINE" else e.is_closed for e in entities)
