@@ -26,6 +26,16 @@ class Path:
     level: int = 0
     """Tone level index, used to pick the DXF layer in posterize mode."""
 
+    bulges: dict[int, np.ndarray] = field(default_factory=dict)
+    """Per-ring bulge arrays from arc fitting, keyed by ring index.
+
+    Ring 0 is ``outer``; 1 onwards are ``holes``. A ring absent from this map
+    is written as a plain polyline.
+    """
+
+    circles: dict[int, tuple[float, float, float]] = field(default_factory=dict)
+    """Rings that are whole circles, as ``(cx, cy, radius)``, same keying."""
+
     def rings(self):
         """Yield the outer ring followed by every hole."""
         yield self.outer
@@ -33,7 +43,17 @@ class Path:
 
     @property
     def vertex_count(self) -> int:
-        return sum(len(ring) for ring in self.rings())
+        """Vertices this path will actually export.
+
+        A ring fitted as a whole circle writes one CIRCLE entity, so its
+        points are not counted — the status bar should report the size of the
+        file the machine gets, not of the intermediate trace.
+        """
+        return sum(
+            len(ring)
+            for index, ring in enumerate(self.rings())
+            if index not in self.circles
+        )
 
 
 @dataclass(slots=True)

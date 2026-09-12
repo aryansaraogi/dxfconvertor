@@ -18,8 +18,12 @@ def trace_mask(
     *,
     px_per_mm: float,
     level: int = 0,
-) -> list[Path]:
+) -> tuple[list[Path], list[Path]]:
     """Extract simplified outlines from a single binary mask.
+
+    Returns ``(kept, discarded)``. The discarded list holds contours dropped
+    by the minimum-area filter, so the UI can show what the despeckle control
+    is actually removing instead of silently swallowing real detail.
 
     ``RETR_CCOMP`` gives a two-level hierarchy — outer boundaries at the top,
     their holes as children — which is what lets the counter of an "O" stay
@@ -31,18 +35,22 @@ def trace_mask(
         mask, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_NONE
     )
     if hierarchy is None or len(contours) == 0:
-        return []
+        return [], []
 
     hierarchy = hierarchy[0]
     epsilon_px = params.simplify_mm * px_per_mm
     min_area_px = params.min_area_mm2 * px_per_mm * px_per_mm
 
     paths: list[Path] = []
+    discarded: list[Path] = []
     for index, contour in enumerate(contours):
         # A contour with a parent is a hole; it is collected via its parent.
         if hierarchy[index][3] != -1:
             continue
         if cv2.contourArea(contour) < min_area_px:
+            dropped = _finish_ring(contour, epsilon_px, 0)
+            if dropped is not None:
+                discarded.append(Path(dropped, [], level))
             continue
 
         outer = _finish_ring(contour, epsilon_px, params.smooth)
@@ -61,7 +69,7 @@ def trace_mask(
 
         paths.append(Path(outer, holes, level))
 
-    return paths
+    return paths, discarded
 
 
 def _finish_ring(

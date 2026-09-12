@@ -18,9 +18,13 @@ import numpy as np
 #: Shorter runs than this are cheaper and safer to leave as straight lines.
 _MIN_ARC_POINTS = 5
 
-#: A circle fit is meaningless once the radius approaches infinity; beyond
-#: this multiple of the ring's own size the points are effectively collinear.
-_MAX_RADIUS_FACTOR = 1000.0
+#: A run whose radius dwarfs its own chord is a straight line dressed up as a
+#: circle; refuse the fit rather than emit a near-zero bulge.
+_MAX_RADIUS_FACTOR = 100.0
+
+#: How far short of a full turn a closed ring may fall and still count as a
+#: circle (radians). Small, because the ring is measured closed.
+_FULL_TURN_SLACK = 0.05
 
 
 def fit_circle(points: np.ndarray, tol: float) -> tuple[float, float, float] | None:
@@ -38,12 +42,22 @@ def fit_circle(points: np.ndarray, tol: float) -> tuple[float, float, float] | N
     if radius <= 0:
         return None
 
-    deviation = np.abs(np.hypot(points[:, 0] - cx, points[:, 1] - cy) - radius)
+    # Probe the polyline, not just its corners. Every regular polygon has its
+    # vertices equidistant from its centre, so a square's four corners fit a
+    # circle perfectly; only the middles of its sides reveal that it is not
+    # one.
+    probes = np.vstack([points, (points + np.roll(points, -1, axis=0)) / 2.0])
+    deviation = np.abs(np.hypot(probes[:, 0] - cx, probes[:, 1] - cy) - radius)
     if deviation.max() > tol:
         return None
 
-    angles = np.arctan2(points[:, 1] - cy, points[:, 0] - cx)
-    if _total_sweep(angles) < 2 * math.pi - 0.2:
+    # Close the ring before measuring, so the step from the last point back
+    # to the first is counted. Simplification can leave that final gap large,
+    # and without it a genuine circle falls just short of a full turn and gets
+    # rejected — then fitted as a 350-degree arc plus a chord instead.
+    closed = np.vstack([points, points[:1]])
+    angles = np.arctan2(closed[:, 1] - cy, closed[:, 0] - cx)
+    if _total_sweep(angles) < 2 * math.pi - _FULL_TURN_SLACK:
         return None
 
     return cx, cy, radius
@@ -108,21 +122,44 @@ def _grow_arc(points: np.ndarray, start: int, tol: float) -> int:
 
 
 def _fits_circle(window: np.ndarray, tol: float) -> bool:
+    """Whether one circle passes within ``tol`` of every point in ``window``.
+
+    Deliberately permissive about how *curved* the run is: the seed window is
+    only a few points long, and a genuine arc barely bows over that distance.
+    Whether the finished run curves enough to be worth an arc at all is
+    decided once, at acceptance, in :func:`_arc_bulge`.
+    """
+    chord, _ = _chord_and_bow(window)
+    if chord < tol:
+        return False
+
     fit = _algebraic_circle(window)
     if fit is None:
         return False
     cx, cy, radius = fit
-
-    extent = max(
-        window[:, 0].max() - window[:, 0].min(),
-        window[:, 1].max() - window[:, 1].min(),
-    )
-    # An enormous radius means "straight line"; a bulge would add nothing.
-    if radius <= 0 or radius > max(extent, tol) * _MAX_RADIUS_FACTOR:
+    if radius <= 0 or radius > chord * _MAX_RADIUS_FACTOR:
         return False
 
-    deviation = np.abs(np.hypot(window[:, 0] - cx, window[:, 1] - cy) - radius)
+    # Test the polyline, not just its corners. Simplification leaves a long
+    # straight edge as two points, and a large circle passes through any two
+    # points — so checking vertices alone lets an arc swallow a straight side
+    # and run on into the next corner. Segment midpoints expose that: the
+    # middle of a long chord sits far off the circle it supposedly lies on.
+    probes = np.vstack([window, (window[:-1] + window[1:]) / 2.0])
+    deviation = np.abs(np.hypot(probes[:, 0] - cx, probes[:, 1] - cy) - radius)
     return bool(deviation.max() <= tol)
+
+
+def _chord_and_bow(window: np.ndarray) -> tuple[float, float]:
+    """Length of the run's chord, and how far it bows away from that chord."""
+    start = window[0]
+    span = window[-1] - start
+    chord = float(math.hypot(span[0], span[1]))
+    if chord <= 0:
+        return 0.0, 0.0
+    offsets = window - start
+    cross = np.abs(offsets[:, 0] * span[1] - offsets[:, 1] * span[0])
+    return chord, float(cross.max() / chord)
 
 
 def _arc_bulge(
@@ -138,17 +175,29 @@ def _arc_bulge(
 
     first = points[start]
     last = points[end]
-    chord = math.hypot(last[0] - first[0], last[1] - first[1])
+    chord, bow = _chord_and_bow(points[start : end + 1])
     if chord < tol:
         return None
 
-    mid = points[(start + end) // 2]
-    sweep = _sweep_through(
-        math.atan2(first[1] - cy, first[0] - cx),
-        math.atan2(mid[1] - cy, mid[0] - cx),
-        math.atan2(last[1] - cy, last[0] - cx),
-    )
+    # A run that barely leaves its own chord is a straight line; an arc here
+    # would carry a near-zero bulge and buy nothing.
+    if bow <= tol:
+        return None
+
+    # Derive the sweep from every point in the run, unwrapped. Judging
+    # direction from a single midpoint gets the sign wrong whenever that point
+    # is not where it is assumed to be, and an arc with the right endpoints but
+    # the wrong direction takes the long way round the circle.
+    sweep = _signed_sweep(points[start : end + 1], cx, cy)
     if abs(sweep) < 1e-6 or abs(sweep) >= 2 * math.pi:
+        return None
+
+    # Final gate: measure the arc that will actually be written against every
+    # point it replaces. The circle fit only says the points sit near the
+    # circle, not that they sit near the *arc* — an arc spanning the short way
+    # round leaves points on the long way round uncovered, which is how a
+    # letter's curve ends up short-circuited by a bulge.
+    if _arc_error(points[start : end + 1], cx, cy, radius, sweep) > tol:
         return None
 
     # bulge = tan(sweep / 4) is the DXF definition; the sign carries the
@@ -156,18 +205,41 @@ def _arc_bulge(
     return math.tan(sweep / 4.0)
 
 
-def _sweep_through(start: float, middle: float, end: float) -> float:
-    """Signed sweep from ``start`` to ``end`` passing through ``middle``."""
-    forward = _normalize(end - start)
-    to_mid = _normalize(middle - start)
-    if to_mid <= forward:
-        return forward
-    return forward - 2 * math.pi
+def _arc_error(
+    run: np.ndarray, cx: float, cy: float, radius: float, sweep: float
+) -> float:
+    """Greatest distance from any point of ``run`` to the arc replacing it.
+
+    A point whose angle falls inside the arc's span is off by its radial
+    error; one outside the span is off by its distance to the nearer endpoint,
+    since that is where the arc stops.
+    """
+    offsets = run - np.array([cx, cy])
+    angles = np.arctan2(offsets[:, 1], offsets[:, 0])
+    radial = np.abs(np.hypot(offsets[:, 0], offsets[:, 1]) - radius)
+
+    start_angle = angles[0]
+    # Progress of each point around the arc, measured in the sweep direction.
+    travelled = (angles - start_angle) * (1.0 if sweep >= 0 else -1.0)
+    travelled = travelled % (2 * math.pi)
+    inside = travelled <= abs(sweep) + 1e-9
+
+    to_ends = np.minimum(
+        np.linalg.norm(run - run[0], axis=1),
+        np.linalg.norm(run - run[-1], axis=1),
+    )
+    return float(np.where(inside, radial, to_ends).max())
 
 
-def _normalize(angle: float) -> float:
-    """Wrap an angle into ``[0, 2pi)``."""
-    return angle % (2 * math.pi)
+def _signed_sweep(run: np.ndarray, cx: float, cy: float) -> float:
+    """Angle swept from the first point to the last, about ``(cx, cy)``.
+
+    Positive is counter-clockwise. Unwrapping keeps the result continuous
+    across the +/-pi seam, so the magnitude is the true sweep rather than its
+    wrapped remainder.
+    """
+    angles = np.unwrap(np.arctan2(run[:, 1] - cy, run[:, 0] - cx))
+    return float(angles[-1] - angles[0])
 
 
 def _total_sweep(angles: np.ndarray) -> float:

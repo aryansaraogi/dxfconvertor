@@ -10,6 +10,7 @@ from dataclasses import dataclass, field, replace
 from typing import Literal
 
 BinarizeMode = Literal["otsu", "fixed", "adaptive", "posterize", "edges"]
+KerfSide = Literal["none", "outside", "inside"]
 SizeMode = Literal["fit", "dpi"]
 Origin = Literal["bottom-left", "center"]
 
@@ -24,6 +25,13 @@ class TraceParams:
 
     Lengths the user types are in millimetres; anything in pixels is internal.
     """
+
+    # --- source framing ------------------------------------------------
+    rotate_deg: float = 0.0
+    """Rotation applied before anything else. Straightens a crooked scan."""
+
+    crop: tuple[float, float, float, float] | None = None
+    """``(left, top, right, bottom)`` as fractions of the rotated image."""
 
     # --- preprocessing -------------------------------------------------
     invert: bool = False
@@ -87,6 +95,16 @@ class TraceParams:
 
     origin: Origin = "bottom-left"
 
+    # --- machine compensation ------------------------------------------
+    kerf_mm: float = 0.0
+    """Beam width. Paths are offset by half of it; 0 disables."""
+
+    kerf_side: KerfSide = "none"
+    """``outside`` keeps the part's size, ``inside`` keeps the hole's."""
+
+    fit_arcs: bool = True
+    """Replace circular runs with true arcs and circles."""
+
     # --- output --------------------------------------------------------
     dxf_version: str = "R2010"
     layer_name: str = "CUT"
@@ -99,6 +117,10 @@ class TraceParams:
         """
         return replace(
             self,
+            rotate_deg=float(self.rotate_deg) % 360.0,
+            crop=_clean_box(self.crop),
+            kerf_mm=max(0.0, float(self.kerf_mm)),
+            kerf_side=self.kerf_side if self.kerf_side in _KERF_SIDES else "none",
             blur=max(0, int(self.blur)),
             denoise=max(0, int(self.denoise)),
             threshold=_clamp(int(self.threshold), 0, 255),
@@ -117,6 +139,23 @@ class TraceParams:
             dpi=max(1.0, float(self.dpi)),
             dxf_version=self.dxf_version if self.dxf_version in DXF_VERSIONS else "R2010",
         )
+
+
+_KERF_SIDES = ("none", "outside", "inside")
+
+
+def _clean_box(box) -> tuple[float, float, float, float] | None:
+    """Drop a crop that covers everything; it only costs a copy."""
+    if box is None:
+        return None
+    from .transform import normalize_box
+
+    left, top, right, bottom = normalize_box(tuple(box))
+    if right - left <= 0 or bottom - top <= 0:
+        return None
+    if (left, top, right, bottom) == (0.0, 0.0, 1.0, 1.0):
+        return None
+    return left, top, right, bottom
 
 
 def _clamp(value: int, low: int, high: int) -> int:

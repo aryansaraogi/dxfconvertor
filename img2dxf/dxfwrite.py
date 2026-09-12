@@ -84,16 +84,47 @@ def build_document(paths: list[Path], params: TraceParams):
 
     for path in paths:
         attribs = {"layer": layer_for[path.level]}
-        for ring in path.rings():
+        for index, ring in enumerate(path.rings()):
+            circle = path.circles.get(index)
+            if circle is not None:
+                cx, cy, radius = circle
+                msp.add_circle((cx, cy), radius, dxfattribs=attribs)
+                continue
             if len(ring) < 3:
                 continue
-            points = [(float(x), float(y)) for x, y in ring]
-            if use_lwpolyline:
-                msp.add_lwpolyline(points, format="xy", close=True, dxfattribs=attribs)
-            else:
-                msp.add_polyline2d(points, close=True, dxfattribs=attribs)
+            _add_ring(msp, ring, path.bulges.get(index), use_lwpolyline, attribs)
 
     return doc
+
+
+def _add_ring(msp, ring, bulges, use_lwpolyline: bool, attribs: dict) -> None:
+    """Write one closed ring, carrying bulges when arcs were fitted.
+
+    Bulges ride on the polyline itself rather than becoming separate ARC
+    entities, so the ring stays a single closed contour with no seams for the
+    controller to lift over between segments.
+    """
+    has_bulges = bulges is not None and len(bulges) == len(ring)
+
+    if use_lwpolyline:
+        if has_bulges:
+            points = [
+                (float(x), float(y), float(b)) for (x, y), b in zip(ring, bulges)
+            ]
+            msp.add_lwpolyline(points, format="xyb", close=True, dxfattribs=attribs)
+        else:
+            points = [(float(x), float(y)) for x, y in ring]
+            msp.add_lwpolyline(points, format="xy", close=True, dxfattribs=attribs)
+        return
+
+    # R12: bulge is a per-vertex DXF attribute rather than a point format.
+    polyline = msp.add_polyline2d(
+        [(float(x), float(y)) for x, y in ring], close=True, dxfattribs=attribs
+    )
+    if has_bulges:
+        for vertex, bulge in zip(polyline.vertices, bulges):
+            if bulge:
+                vertex.dxf.bulge = float(bulge)
 
 
 def _create_layers(doc, levels: list[int], base_name: str) -> dict[int, str]:

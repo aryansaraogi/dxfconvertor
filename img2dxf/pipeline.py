@@ -7,10 +7,13 @@ from pathlib import Path as FsPath
 
 import numpy as np
 
+from .arcfit import fit_bulges, fit_circle
 from .geometry import Bounds, Path, bounds_of, pixels_per_mm, to_millimetres
+from .kerf import offset_paths
 from .params import TraceParams
 from .preprocess import binarize, load_image, prepare, to_grayscale
 from .trace import trace_mask
+from .transform import apply_transform
 
 
 @dataclass(slots=True)
@@ -22,6 +25,12 @@ class TraceResult:
 
     masks: list[np.ndarray]
     """The binary masks that produced them, for the preview."""
+
+    discarded: list[Path]
+    """Contours dropped by the minimum-area filter, in millimetres."""
+
+    image_rgb: np.ndarray
+    """The rotated and cropped image the trace actually ran on."""
 
     gray: np.ndarray
     px_per_mm: float
@@ -43,20 +52,35 @@ class TraceResult:
     def level_count(self) -> int:
         return len({p.level for p in self.paths})
 
+    @property
+    def arc_count(self) -> int:
+        """Arcs and whole circles recovered by the fitter."""
+        return sum(
+            int(np.count_nonzero(b)) for p in self.paths for b in p.bulges.values()
+        ) + sum(len(p.circles) for p in self.paths)
+
     def summary(self) -> str:
         """One-line status text: the sanity check before hitting Export."""
         if self.bounds is None:
             return "No paths found — try adjusting the threshold or mode."
-        return (
+        text = (
             f"{self.path_count} paths | {self.vertex_count} vertices | "
             f"{self.bounds.width:.1f} x {self.bounds.height:.1f} mm"
         )
+        if self.arc_count:
+            text += f" | {self.arc_count} arcs"
+        if self.discarded:
+            text += f" | {len(self.discarded)} dropped"
+        return text
 
 
 def run(image_rgb: np.ndarray, params: TraceParams) -> TraceResult:
     """Convert an already-loaded RGB image into millimetre-space paths."""
     params = params.normalized()
 
+    # Rotate and crop first: every measurement below, sizing included, should
+    # describe the piece the user is actually looking at.
+    image_rgb = apply_transform(image_rgb, params)
     height_px, width_px = image_rgb.shape[:2]
     px_per_mm = pixels_per_mm(
         width_px, height_px,
@@ -70,24 +94,67 @@ def run(image_rgb: np.ndarray, params: TraceParams) -> TraceResult:
     masks = binarize(gray, params)
 
     paths: list[Path] = []
+    discarded: list[Path] = []
     for level, mask in enumerate(masks):
-        paths.extend(trace_mask(mask, params, px_per_mm=px_per_mm, level=level))
+        kept, dropped = trace_mask(mask, params, px_per_mm=px_per_mm, level=level)
+        paths.extend(kept)
+        discarded.extend(dropped)
 
-    paths = to_millimetres(
-        paths,
-        image_height_px=height_px,
-        px_per_mm=px_per_mm,
-        origin=params.origin,
-    )
+    def to_mm(items: list[Path]) -> list[Path]:
+        return to_millimetres(
+            items,
+            image_height_px=height_px,
+            px_per_mm=px_per_mm,
+            origin=params.origin,
+        )
+
+    paths = to_mm(paths)
+    discarded = to_mm(discarded)
+
+    # Kerf before arcs: the arcs should describe the path the machine will
+    # actually follow, not the one before compensation moved it.
+    paths = offset_paths(paths, params.kerf_mm, params.kerf_side)
+    if params.fit_arcs:
+        _fit_arcs(paths, params.simplify_mm, px_per_mm)
 
     return TraceResult(
         paths=paths,
         masks=masks,
+        discarded=discarded,
+        image_rgb=image_rgb,
         gray=gray,
         px_per_mm=px_per_mm,
         image_size_px=(width_px, height_px),
         bounds=bounds_of(paths),
     )
+
+
+def _fit_arcs(paths: list[Path], simplify_mm: float, px_per_mm: float) -> None:
+    """Attach arc data to every ring, in place.
+
+    The tolerance is the looser of the simplification tolerance and one source
+    pixel. The pixel floor is the important half: a traced circle is a
+    staircase of whole pixels, so it departs from any true circle by about
+    half a pixel no matter how clean the artwork. Demanding a tighter fit than
+    the image can express rejects every real circle.
+    """
+    tol = max(simplify_mm, 1.0 / px_per_mm if px_per_mm > 0 else 0.0, 0.02)
+
+    for path in paths:
+        for index, ring in enumerate(path.rings()):
+            circle = fit_circle(ring, tol)
+            if circle is not None:
+                path.circles[index] = circle
+                continue
+            fitted = fit_bulges(ring, tol)
+            if fitted is None:
+                continue
+            points, bulges = fitted
+            if index == 0:
+                path.outer = points
+            else:
+                path.holes[index - 1] = points
+            path.bulges[index] = bulges
 
 
 def run_file(path: str | FsPath, params: TraceParams) -> TraceResult:
