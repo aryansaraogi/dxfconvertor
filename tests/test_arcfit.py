@@ -37,14 +37,19 @@ def rounded_rect(width=60.0, height=40.0, radius=10.0, per_corner=40) -> np.ndar
     return np.vstack(points)
 
 
-def expand(vertices: np.ndarray, bulges: np.ndarray, per_arc=120) -> np.ndarray:
-    """Flatten a bulge polyline the way a CAD reader would."""
+def expand(vertices: np.ndarray, bulges: np.ndarray, per_arc=800) -> np.ndarray:
+    """Flatten a bulge polyline the way a CAD reader would.
+
+    Sampled densely on purpose: deviation is measured to the nearest sampled
+    point, so coarse sampling would report the gap between samples as error.
+    """
     pieces = []
     for index, bulge in enumerate(bulges):
         start = vertices[index]
         end = vertices[(index + 1) % len(vertices)]
         if not bulge:
-            pieces.append(np.array([start, end]))
+            steps = np.linspace(0, 1, 400)[:, None]
+            pieces.append(start + (end - start) * steps)
             continue
         centre, start_angle, end_angle, radius = bulge_to_arc(start, end, bulge)
         if end_angle < start_angle:

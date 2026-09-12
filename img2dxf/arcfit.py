@@ -296,3 +296,45 @@ def _algebraic_circle(points: np.ndarray) -> tuple[float, float, float] | None:
         return None
 
     return float(cx), float(cy), float(math.sqrt(under_root))
+
+
+def flatten_ring(
+    points: np.ndarray, bulges: np.ndarray | None, per_arc: int = 24
+) -> np.ndarray:
+    """Expand a bulge polyline into plain points, for drawing.
+
+    The preview has to show the curve a DXF reader will draw, not the handful
+    of vertices that encode it, or an arc-fitted shape would appear as a
+    coarse polygon on screen while exporting correctly.
+    """
+    if bulges is None or len(bulges) != len(points):
+        return points
+
+    pieces = []
+    count = len(points)
+    for index, bulge in enumerate(bulges):
+        first = points[index]
+        last = points[(index + 1) % count]
+        if not bulge:
+            pieces.append(first[None, :])
+            continue
+        arc = _realized_arc(first, last, float(bulge))
+        if arc is None:
+            pieces.append(first[None, :])
+            continue
+        centre, radius, included = arc
+        start_angle = math.atan2(first[1] - centre[1], first[0] - centre[0])
+        angles = np.linspace(start_angle, start_angle + included, per_arc)
+        pieces.append(
+            np.column_stack(
+                [centre[0] + radius * np.cos(angles), centre[1] + radius * np.sin(angles)]
+            )
+        )
+    return np.vstack(pieces)
+
+
+def circle_points(circle: tuple[float, float, float], count: int = 96) -> np.ndarray:
+    """Sample a fitted circle, for drawing."""
+    cx, cy, radius = circle
+    angles = np.linspace(0, 2 * math.pi, count, endpoint=False)
+    return np.column_stack([cx + radius * np.cos(angles), cy + radius * np.sin(angles)])

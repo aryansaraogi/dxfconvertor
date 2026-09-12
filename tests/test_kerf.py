@@ -63,6 +63,8 @@ def test_hole_moves_opposite_to_its_outline(ring_image):
 def test_kerf_survives_export(square_image, tmp_path):
     from dataclasses import replace
 
+    plain = traced_width(square_image)
+
     params = replace(PIXEL_PER_MM, kerf_mm=1.0, kerf_side="outside")
     result = run(square_image, params)
     path = write_dxf(result.paths, tmp_path / "kerf.dxf", params)
@@ -70,7 +72,7 @@ def test_kerf_survives_export(square_image, tmp_path):
     doc = ezdxf.readfile(path)
     [entity] = doc.modelspace().query("LWPOLYLINE")
     xs = [p[0] for p in entity.get_points("xy")]
-    assert max(xs) - min(xs) == pytest.approx(51.0, abs=0.1)
+    assert max(xs) - min(xs) == pytest.approx(plain + 1.0, abs=0.1)
 
 
 def test_tone_levels_stay_separate(gradient_image):

@@ -41,10 +41,13 @@ class TraceWorker:
         widget,
         on_result: Callable[[TraceResult, TraceParams], None],
         on_error: Callable[[Exception], None],
+        on_busy: Callable[[bool], None] | None = None,
     ) -> None:
         self._widget = widget
         self._on_result = on_result
         self._on_error = on_error
+        self._on_busy = on_busy
+        self._busy = False
         self._results: queue.Queue = queue.Queue()
         self._pending: _Job | None = None
         self._debounce_id: str | None = None
@@ -70,6 +73,7 @@ class TraceWorker:
             self._pending = None
         if job is None:
             return
+        self._set_busy(True)
         threading.Thread(target=self._run, args=(job,), daemon=True).start()
 
     def _run(self, job: _Job) -> None:
@@ -92,9 +96,22 @@ class TraceWorker:
             token, params, result, error = latest
             # A newer request has already been issued; this one is obsolete.
             if token >= self._token:
+                self._set_busy(False)
                 if error is not None:
                     self._on_error(error)
                 else:
                     self._on_result(result, params)
 
         self._widget.after(POLL_MS, self._drain)
+
+    def _set_busy(self, busy: bool) -> None:
+        """Report start and finish once each, not per superseded job.
+
+        A dragged slider fires many jobs; the indicator should stay on for the
+        whole drag rather than flickering between them.
+        """
+        if busy == self._busy:
+            return
+        self._busy = busy
+        if self._on_busy is not None:
+            self._on_busy(busy)
