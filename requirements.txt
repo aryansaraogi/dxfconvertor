@@ -2,3 +2,7 @@ numpy>=1.24
 opencv-python-headless>=4.8
 pillow>=10.0
 ezdxf>=1.3
+pyclipper>=1.3
+
+# Optional: enables drag-and-drop onto the window. Everything works without it.
+tkinterdnd2>=0.4
