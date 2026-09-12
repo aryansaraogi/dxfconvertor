@@ -47,18 +47,62 @@ def to_grayscale(rgb: np.ndarray) -> np.ndarray:
 
 
 def prepare(gray: np.ndarray, params: TraceParams) -> np.ndarray:
-    """Denoise and blur, in that order.
+    """Get the grayscale image ready for thresholding.
 
-    Median first so salt-and-pepper specks are removed outright instead of
-    being smeared into grey blobs that then survive thresholding.
+    Order matters. Tone is fixed first, so the threshold has a full range to
+    work with. Median denoise comes next, removing salt-and-pepper specks
+    outright rather than letting the later steps smear them into grey blobs
+    that survive thresholding. Sharpen then blur come last, because they are
+    the two that undo each other.
     """
     out = gray
+
+    if params.auto_levels:
+        out = auto_levels(out)
+    if params.brightness or params.contrast != 1.0:
+        out = cv2.convertScaleAbs(
+            out, alpha=params.contrast,
+            # Rotate contrast about mid-grey rather than about black, or
+            # raising it would also brighten the whole image.
+            beta=params.brightness + 128.0 * (1.0 - params.contrast),
+        )
+    if params.gamma != 1.0:
+        out = cv2.LUT(out, _gamma_table(params.gamma))
     if params.denoise:
         out = cv2.medianBlur(out, _odd(params.denoise))
+    if params.sharpen:
+        out = _unsharp(out, params.sharpen)
     if params.blur:
         k = _odd(params.blur)
         out = cv2.GaussianBlur(out, (k, k), 0)
+
     return out
+
+
+def auto_levels(gray: np.ndarray, ignore: float = 0.5) -> np.ndarray:
+    """Stretch the tonal range to fill 0-255.
+
+    The black and white points come from percentiles, not from the extremes:
+    a single dust speck or blown highlight would otherwise define the range
+    and leave the actual artwork as unstretched as before.
+    """
+    low, high = np.percentile(gray, (ignore, 100.0 - ignore))
+    if high - low < 1:
+        return gray
+    stretched = (gray.astype(np.float32) - low) * (255.0 / (high - low))
+    return np.clip(stretched, 0, 255).astype(np.uint8)
+
+
+def _gamma_table(gamma: float) -> np.ndarray:
+    """A 256-entry LUT; this runs on every slider drag, so per-pixel pow is out."""
+    values = np.arange(256, dtype=np.float32) / 255.0
+    return np.clip(np.power(values, 1.0 / gamma) * 255.0, 0, 255).astype(np.uint8)
+
+
+def _unsharp(gray: np.ndarray, strength: float) -> np.ndarray:
+    """Unsharp mask: push the image away from its own blurred version."""
+    blurred = cv2.GaussianBlur(gray, (0, 0), 2.0)
+    return cv2.addWeighted(gray, 1.0 + strength, blurred, -strength, 0)
 
 
 def binarize(gray: np.ndarray, params: TraceParams) -> list[np.ndarray]:

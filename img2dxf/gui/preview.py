@@ -13,13 +13,20 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageTk
 
 from ..arcfit import circle_points, flatten_ring
+from ..params import TraceParams
 from ..pipeline import TraceResult
+from ..tabs import open_segments
 
 VIEWS = ("Original", "Mask", "Vectors", "Overlay")
 
 _OUTER_COLOR = (16, 120, 230)
 _HOLE_COLOR = (225, 60, 40)
 _DISCARDED_COLOR = (235, 150, 20)
+#: The bed is drawn on the Tk canvas rather than into the image frame: it is
+#: usually larger than the artwork, and anything drawn into the frame is
+#: clipped to the image, which would hide most of it.
+BED_OK_COLOR = "#999999"
+BED_OVER_COLOR = "#d02020"
 _OVERLAY_DIM = 0.35
 
 MIN_ZOOM = 0.05
@@ -82,6 +89,7 @@ def render(
     canvas_size: tuple[int, int],
     *,
     show_discarded: bool = False,
+    params: TraceParams | None = None,
 ) -> ImageTk.PhotoImage | None:
     """Render one canvas-sized frame at the current zoom and pan.
 
@@ -95,7 +103,7 @@ def render(
 
     source = _compose(view, image_rgb, result)
     if view in ("Vectors", "Overlay") and result is not None:
-        _draw_paths(source, result, show_discarded)
+        _draw_paths(source, result, show_discarded, params)
 
     return ImageTk.PhotoImage(_place(source, state, canvas_size))
 
@@ -165,7 +173,10 @@ def _combine_masks(masks: list[np.ndarray]) -> np.ndarray:
 
 
 def _draw_paths(
-    frame: Image.Image, result: TraceResult, show_discarded: bool
+    frame: Image.Image,
+    result: TraceResult,
+    show_discarded: bool,
+    params: TraceParams | None = None,
 ) -> None:
     """Draw traced rings, converting millimetre coordinates back to pixels."""
     draw = ImageDraw.Draw(frame)
@@ -173,17 +184,39 @@ def _draw_paths(
     if show_discarded:
         for path in result.discarded:
             draw.line(
-                _closed(_to_pixels(path.outer, result, frame.height)),
+                _closed(mm_to_image_px(path.outer, result, frame.height)),
                 fill=_DISCARDED_COLOR,
                 width=1,
             )
 
+    tabs_on = params is not None and params.tabs_enabled
+
     for path in result.paths:
         for index, ring in enumerate(path.rings()):
-            curve = _curve_of(path, index, ring)
             colour = _OUTER_COLOR if index == 0 else _HOLE_COLOR
+
+            if tabs_on:
+                segments = open_segments(
+                    ring,
+                    path.bulges.get(index),
+                    path.circles.get(index),
+                    params.tab_count,
+                    params.tab_mm,
+                )
+                if segments is not None:
+                    # Drawn open, so the gaps the machine will leave are
+                    # visible before anyone commits a sheet of material.
+                    for segment in segments:
+                        draw.line(
+                            mm_to_image_px(segment, result, frame.height),
+                            fill=colour,
+                            width=1,
+                        )
+                    continue
+
+            curve = _curve_of(path, index, ring)
             draw.line(
-                _closed(_to_pixels(curve, result, frame.height)),
+                _closed(mm_to_image_px(curve, result, frame.height)),
                 fill=colour,
                 width=1,
             )
@@ -197,9 +230,10 @@ def _curve_of(path, index: int, ring: np.ndarray) -> np.ndarray:
     return flatten_ring(ring, path.bulges.get(index))
 
 
-def _to_pixels(
+def mm_to_image_px(
     ring: np.ndarray, result: TraceResult, frame_height: int
 ) -> list[tuple[float, float]]:
+    """Millimetre coordinates back into image-pixel space, Y flipped."""
     scale = result.px_per_mm
     xs = ring[:, 0]
     ys = ring[:, 1]

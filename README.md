@@ -29,6 +29,9 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m img2dxf.cli photo.jpg --preset Photo --width-mm 120
 .\.venv\Scripts\python.exe -m img2dxf.cli part.png --width-mm 60 --kerf 0.15
 .\.venv\Scripts\python.exe -m img2dxf.cli scan.png --rotate -2.5 --crop 0.1,0.1,0.9,0.6
+.\.venv\Scripts\python.exe -m img2dxf.cli part.png --width-mm 60 --tabs 4 --tab-mm 0.5
+.\.venv\Scripts\python.exe -m img2dxf.cli part.png --copies 3x2 --bed 400x300
+.\.venv\Scripts\python.exe -m img2dxf.cli logo.png -o logo.svg --width-mm 80
 ```
 
 `--help` lists every flag. Any flag overrides the preset it is combined with.
@@ -59,6 +62,43 @@ machine actually cuts (typically 0.1–0.2 mm) and pick a side:
 
 Outlines and holes are offset in opposite directions automatically. A feature thinner
 than the kerf disappears, because the beam would consume it entirely.
+
+## Tabs (bridges)
+
+A closed cut releases the part the moment it finishes: it drops, tilts in the slot,
+and the beam finishes the pass across whatever is now underneath. Set **Tabs per path**
+to leave that many uncut bridges, and **Tab width** to how wide each one is (0.3–1 mm
+is typical). Snap the parts out afterwards.
+
+Tabs and arc fitting cannot share a path — a gap partway along an arc cannot be
+expressed as a polyline bulge — so tabbed paths are written as plain open polylines.
+Everything else keeps its arcs.
+
+Rings too small to give up the material are left closed rather than lost, and a
+requested tab count is quietly reduced if the path cannot afford it.
+
+## Layout and the bed
+
+Enter your machine's **Bed** size and the preview draws it as a dashed outline; it
+turns red, along with the status bar, when the job will not fit. Leave it at 0 to
+disable the check.
+
+**Copies across/down** tiles the job on a grid to fill a sheet in one run, with **Tile
+gap** between copies. The fit check measures the tiled result, not one copy.
+
+## Setting the size from something you can measure
+
+Rather than guessing at a width: tick **Measure**, drag across a feature whose real
+size you know, then press **Set size…** and type that size. The whole job is rescaled
+so the feature comes out exactly right.
+
+## Image adjustments
+
+For photos and faint scans that threshold badly: **Auto levels** stretches the tonal
+range to fill 0–255 (ignoring stray specks, so one dust mote cannot define black),
+then **Brightness**, **Contrast** (pivoting about mid-grey, so it does not also
+brighten) and **Gamma** for the midtones. **Sharpen** and **Blur** undo one another —
+use one or the other.
 
 ## Framing
 
@@ -91,6 +131,13 @@ of the piece you can see.
 - **Broken thin lines**: raise *Bridge gaps*, or use `adaptive` mode.
 - **Photos** rarely work as a single threshold. Use the Photo preset and 3–4 tone
   levels, then assign different power/speed to each `CUT_TONE_*` layer.
+
+## Output formats
+
+Export to **DXF** or **SVG** — the GUI picks by the extension you choose, and the CLI
+by the output extension or `--format`. The SVG opens at true physical size (mm), keeps
+fitted circles and arcs as `<circle>` and arc commands, and puts each tone on its own
+`<g>` group.
 
 ## Output details
 

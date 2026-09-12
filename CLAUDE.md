@@ -28,10 +28,15 @@ not have the dependencies installed.
 One-way data flow; each stage only knows about the one before it.
 
 ```
-apply_transform ─► prepare ─► binarize ─► trace_mask ─► to_millimetres ─► offset_paths ─► _fit_arcs ─► write_dxf
-   transform      preprocess  preprocess    trace          geometry          kerf          pipeline      dxfwrite
-                                       └────────── pipeline.run() orchestrates ──────────┘
+apply_transform ─► prepare ─► binarize ─► trace_mask ─► to_millimetres ─► offset_paths ─► _fit_arcs ─► tile_paths
+   transform      preprocess  preprocess    trace          geometry          kerf          pipeline      tile
+                                      └────────── pipeline.run() orchestrates ──────────┘
+
+then, at write/draw time only:   split_ring (tabs) ─► write_dxf / write_svg / preview
 ```
+
+`prepare` also carries the tone adjustments (auto-levels, brightness, contrast,
+gamma, sharpen) ahead of the existing denoise and blur.
 
 | Module | Responsibility |
 |---|---|
@@ -43,7 +48,10 @@ apply_transform ─► prepare ─► binarize ─► trace_mask ─► to_milli
 | [kerf.py](img2dxf/kerf.py) | pyclipper polygon offsetting for beam-width compensation |
 | [arcfit.py](img2dxf/arcfit.py) | recover circles and arcs from polylines; also flattens them back for drawing |
 | [pipeline.py](img2dxf/pipeline.py) | `run()` / `run_file()` → `TraceResult` |
+| [tile.py](img2dxf/tile.py) | repeat the job on a grid to fill a sheet |
+| [tabs.py](img2dxf/tabs.py) | cut rings into open segments, leaving uncut bridges |
 | [dxfwrite.py](img2dxf/dxfwrite.py) | ezdxf export, version handling, layers, bulges |
+| [svgwrite.py](img2dxf/svgwrite.py) | SVG export at true mm size |
 | [cli.py](img2dxf/cli.py) | argparse front end |
 | [gui/](img2dxf/gui/) | Tkinter shell — see below |
 
@@ -76,7 +84,15 @@ laser would leave as gaps. The lightest band is skipped — that is paper, not a
 **Stage order is load-bearing.** Transform first, so every later measurement describes
 the piece the user is looking at. Kerf before arc fitting, so arcs describe the path
 the machine will actually follow. Kerf after simplification, so Clipper is not paid to
-offset thousands of redundant points.
+offset thousands of redundant points. Tiling last, so each shape is arc-fitted once and
+then copied.
+
+**Tabs are not a pipeline stage.** A gap partway along a ring cannot be carried by
+`Path`, whose rings are closed by definition — splitting rings inside the pipeline
+would break `bounds_of`, the kerf nesting rebuild, and the bed check. Instead
+`tabs.open_segments` is called at write and draw time by `dxfwrite`, `svgwrite` and
+`gui/preview` alike, so the preview shows exactly the gaps that get written. Add a new
+output format and it must call the same function.
 
 ### Kerf (`kerf.py`)
 
@@ -116,6 +132,38 @@ circle by about half a pixel, so a tighter demand rejects every real circle.
 Arcs are written as polyline **bulges**, not separate ARC entities, so a ring stays one
 closed contour with no seams for the controller to lift over.
 
+### Tabs (`tabs.py`)
+
+Gaps are spaced by **arc length**, not vertex index: vertices bunch on curves, so index
+spacing would cluster every tab on the fiddliest part of the outline. Both ends of each
+gap are interpolated onto the exact distance rather than snapping to a vertex, so the
+cut length is exactly `perimeter - count * gap` — which is what the tests assert.
+
+Two refusals are deliberate. A ring that cannot afford the requested tabs gets fewer
+rather than none, and a ring too small for even one gap is left closed: losing a small
+part entirely is worse than letting it drop through.
+
+Tabs flatten arcs on the rings they cut (`open_segments` expands circles and bulges
+first). Tabs and bulges are mutually exclusive per ring, and tabs win.
+
+### Tiling (`tile.py`)
+
+`geometry.translate` must deep-copy. `Path` carries `bulges` and `circles`, and a
+fitted circle stores its own centre, so a shallow copy leaves every tile's circles
+stacked at the first tile's position — silently, since the ring points do move. There
+is a test for exactly this.
+
+### SVG (`svgwrite.py`)
+
+**SVG's Y axis points down**, the opposite of DXF, so `build_svg` flips back what
+`to_millimetres` flipped. Two tests guard it, one comparing the vertical *order* of two
+shapes (a single shape sits near both the top and bottom of its own bounding box, so an
+unflipped export still looks right), and one un-flipping the SVG and matching every DXF
+point.
+
+`width`/`height` are in `mm` and the `viewBox` is in the same units, so the file opens
+at true size.
+
 ### GUI layer
 
 | Module | Responsibility |
@@ -136,15 +184,23 @@ the measure tool both need canvas ⇄ image conversion, and two copies would dri
 `ViewState.fitted` records that the view is still auto-fitting, so loading an image or
 resizing refits rather than stranding the user at a stale zoom.
 
+**The bed is drawn on the Tk canvas, not into the preview image.** The image frame is
+clipped to the artwork, and a bed is normally larger than the job, so drawing it there
+leaves a sliver at the edge. `App._draw_bed` maps mm through `preview.mm_to_image_px`
+and then `ViewState.image_to_canvas`, like the crop box and measure line.
+
 **The preview must draw what will be exported.** `_curve_of` expands fitted arcs and
 circles via `arcfit.flatten_ring` / `circle_points`; drawing the raw reduced vertices
 would show a coarse polygon for a shape that exports as a smooth curve.
 
 `ControlPanel._suspend` guards against re-tracing once per widget while a preset is
 loaded. The crop box is **not** a Tk variable (it holds `None` or a tuple) — it lives
-in `ControlPanel._crop`, reached via `crop()` and `set_field("crop", ...)`. Presets
-deliberately leave rotation and crop alone: those describe the photo in front of the
-user, not the tracing style.
+in `ControlPanel._crop`, reached via `crop()` and `set_field("crop", ...)`.
+
+`_NOT_FROM_PRESETS` lists the fields a preset must never touch: framing (rotation,
+crop), the machine (kerf, tabs, bed) and layout (copies, gap). Those describe the
+user's photo and their machine, not the tracing style being chosen. Add a field of that
+kind and it belongs in that set.
 
 ## DXF constraints worth remembering
 
@@ -172,12 +228,26 @@ job:
   — the kerf sign convention, which is silently wrong if inverted.
 - `test_fitted_arcs_stay_within_tolerance` and `test_square_is_not_a_circle` — arc
   fitting must not distort or hallucinate curves.
+- `test_cut_length_is_perimeter_minus_the_gaps` — tabs must remove exactly the material
+  asked for, no more.
+- `test_y_axis_is_flipped_relative_to_dxf` and `test_unflipping_the_svg_reproduces_the_dxf`
+  — the SVG axis flip.
+- `test_reference_scaling_survives_the_whole_pipeline` — declaring a feature's real size
+  must make it export at that size.
 
 Keep them passing. Tests that assert on vertex counts or polyline structure should set
 `fit_arcs=False`, or arc fitting will legitimately change the answer.
 
 GUI tests build widgets on a withdrawn `Tk()` root and never call `mainloop()`; they
-skip automatically where Tk is unavailable.
+skip automatically where Tk is unavailable. Tests that need a traced result must use
+the `pump()` helper, which **sleeps** between `update()` calls — the worker debounces by
+150 ms, so spinning on `update()` alone never lets the timer fire, and the test sees no
+result. `pump` also settles the busy indicator, so no repeating `after` outlives the
+window and errors during teardown.
+
+When you write both the code and its tests, mutate the code and check the test fails.
+`test_y_axis_is_flipped_relative_to_dxf` passed against a deliberately broken flip in
+its first form, which is how the two-shape version came about.
 
 ## Conventions
 

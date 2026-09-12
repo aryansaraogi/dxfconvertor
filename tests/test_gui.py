@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 tk = pytest.importorskip("tkinter")
@@ -254,3 +256,140 @@ def test_recent_files_are_newest_first_and_deduplicated(tmp_path, monkeypatch):
     recent.remember(first)
 
     assert recent.load() == [first, second]
+
+
+# --- bed outline -----------------------------------------------------------
+
+
+def pump(root, app, timeout: float = 8.0) -> bool:
+    """Run the Tk loop until the background trace lands.
+
+    Real time has to pass: the worker debounces by 150 ms, so spinning on
+    ``update()`` alone never lets the timer fire. The trailing settle lets the
+    busy indicator stop, so no repeating ``after`` outlives the window.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline and app._result is None:
+        root.update()
+        time.sleep(0.01)
+
+    for _ in range(15):
+        root.update()
+        time.sleep(0.01)
+    return app._result is not None
+
+
+def retrace(root, app) -> bool:
+    app._result = None
+    app._retrace()
+    return pump(root, app)
+
+
+def bed_polygons(app):
+    canvas = app._canvas
+    return [i for i in canvas.find_all() if canvas.type(i) == "polygon"]
+
+
+@pytest.fixture
+def loaded_app(root, square_image, tmp_path):
+    import cv2
+
+    from img2dxf.gui.app import App
+
+    path = tmp_path / "square.png"
+    cv2.imwrite(str(path), square_image)
+
+    app = App(root)
+    root.update()
+    app.open_image(str(path))
+    assert pump(root, app), "the worker never delivered a result"
+    yield app
+    app._progress.stop()
+
+
+def set_bed(root, app, width, height) -> None:
+    app.controls.set_field("bed_width_mm", str(width))
+    app.controls.set_field("bed_height_mm", str(height))
+    assert retrace(root, app)
+
+
+def test_bed_is_drawn_only_on_vector_views(loaded_app, root):
+    set_bed(root, loaded_app, 400, 300)
+
+    loaded_app._view_var.set("Vectors")
+    loaded_app._redraw()
+    assert len(bed_polygons(loaded_app)) == 1
+
+    loaded_app._view_var.set("Original")
+    loaded_app._redraw()
+    assert bed_polygons(loaded_app) == []
+
+
+def test_no_bed_configured_draws_nothing(loaded_app):
+    loaded_app._view_var.set("Vectors")
+    loaded_app._redraw()
+    assert bed_polygons(loaded_app) == []
+
+
+def test_bed_outline_turns_red_when_the_job_overflows(loaded_app, root):
+    from img2dxf.gui.preview import BED_OK_COLOR, BED_OVER_COLOR
+
+    def outline(width, height):
+        set_bed(root, loaded_app, width, height)
+        loaded_app._view_var.set("Vectors")
+        loaded_app._redraw()
+        return loaded_app._canvas.itemcget(bed_polygons(loaded_app)[0], "outline")
+
+    assert outline(500, 500) == BED_OK_COLOR
+    assert outline(5, 5) == BED_OVER_COLOR
+
+
+def test_status_goes_red_with_the_warning(loaded_app, root):
+    # cget returns a Tcl colour object, not a str, so compare its text.
+    def colour():
+        return str(loaded_app._status_label.cget("foreground"))
+
+    set_bed(root, loaded_app, 5, 5)
+    assert "DOES NOT FIT" in loaded_app._status.get()
+    assert colour() == "#c02020"
+
+    set_bed(root, loaded_app, 500, 500)
+    assert colour() == ""
+
+
+# --- scale by reference ----------------------------------------------------
+
+
+def test_set_size_button_unlocks_once_something_is_measured(loaded_app):
+    assert str(loaded_app._set_size_button.cget("state")) == "disabled"
+
+    loaded_app._set_mode("measure")
+    loaded_app._drag_start = (10.0, 10.0)
+    loaded_app._on_release(type("Event", (), {"x": 120.0, "y": 10.0})())
+
+    assert str(loaded_app._set_size_button.cget("state")) == "normal"
+    assert loaded_app._measure is not None
+
+
+def test_set_size_does_nothing_without_a_measurement(loaded_app):
+    loaded_app._measure = None
+    loaded_app.set_size_from_measure()  # must not raise
+
+
+def test_layout_fields_survive_a_preset_change(root):
+    """Bed and tile settings describe the machine, not the tracing style."""
+    from img2dxf.gui.controls import ControlPanel
+
+    panel = ControlPanel(root, lambda: None)
+    panel.set_field("bed_width_mm", "400")
+    panel.set_field("bed_height_mm", "300")
+    panel.set_field("tab_count", 4)
+    panel.set_field("copies_x", 3)
+
+    panel.apply_preset("Photo")
+
+    params = panel.params()
+    assert params.bed_width_mm == 400.0
+    assert params.tab_count == 4
+    assert params.copies_x == 3
+    assert params.mode == "posterize"  # the preset still applied

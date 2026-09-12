@@ -72,6 +72,38 @@ class Bounds:
         return self.max_y - self.min_y
 
 
+def translate(path: Path, dx: float, dy: float) -> Path:
+    """A deep copy of ``path`` moved by ``(dx, dy)``.
+
+    Fitted circles carry their own centre, so moving only the ring points
+    would leave every copy's circles stacked at the original's position.
+    """
+    return Path(
+        outer=path.outer + (dx, dy),
+        holes=[hole + (dx, dy) for hole in path.holes],
+        level=path.level,
+        bulges={index: bulges.copy() for index, bulges in path.bulges.items()},
+        circles={
+            index: (cx + dx, cy + dy, radius)
+            for index, (cx, cy, radius) in path.circles.items()
+        },
+    )
+
+
+def width_for_reference(
+    image_width_px: int, measured_px: float, target_mm: float
+) -> float:
+    """The ``width_mm`` that makes a measured feature come out at ``target_mm``.
+
+    Turns the measure tool into a calibration: measure something whose real
+    size you know, say what it is, and the whole job is scaled to match.
+    """
+    if measured_px <= 0 or target_mm <= 0:
+        raise ValueError("measured length and target size must be positive")
+    px_per_mm = measured_px / target_mm
+    return image_width_px / px_per_mm
+
+
 def bounds_of(paths: list[Path]) -> Bounds | None:
     """Axis-aligned bounding box over every ring, or ``None`` if empty."""
     rings = [ring for path in paths for ring in path.rings() if len(ring)]

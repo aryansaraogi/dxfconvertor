@@ -207,7 +207,7 @@ def _arc_bulge(
     return bulge
 
 
-def _realized_arc(
+def realized_arc(
     first: np.ndarray, last: np.ndarray, bulge: float
 ) -> tuple[np.ndarray, float, float] | None:
     """Rebuild the arc a DXF reader derives from two points and a bulge."""
@@ -232,7 +232,7 @@ def _arc_error(run: np.ndarray, bulge: float) -> float:
     error; one outside the span is off by its distance to the nearer endpoint,
     because that is where the arc stops.
     """
-    arc = _realized_arc(run[0], run[-1], bulge)
+    arc = realized_arc(run[0], run[-1], bulge)
     if arc is None:
         return float("inf")
     centre, radius, included = arc
@@ -318,7 +318,7 @@ def flatten_ring(
         if not bulge:
             pieces.append(first[None, :])
             continue
-        arc = _realized_arc(first, last, float(bulge))
+        arc = realized_arc(first, last, float(bulge))
         if arc is None:
             pieces.append(first[None, :])
             continue

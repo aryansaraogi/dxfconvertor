@@ -12,6 +12,7 @@ from .geometry import Bounds, Path, bounds_of, pixels_per_mm, to_millimetres
 from .kerf import offset_paths
 from .params import TraceParams
 from .preprocess import binarize, load_image, prepare, to_grayscale
+from .tile import tile_paths
 from .trace import trace_mask
 from .transform import apply_transform
 
@@ -52,6 +53,15 @@ class TraceResult:
     def level_count(self) -> int:
         return len({p.level for p in self.paths})
 
+    fits_bed: bool = True
+    """Whether the finished job fits the configured machine bed."""
+
+    bed_size_mm: tuple[float, float] | None = None
+    """The bed it was checked against, or ``None`` if none is configured."""
+
+    tabbed: bool = False
+    """Whether tabs will be cut into these paths on export."""
+
     @property
     def arc_count(self) -> int:
         """Arcs and whole circles recovered by the fitter."""
@@ -67,10 +77,17 @@ class TraceResult:
             f"{self.path_count} paths | {self.vertex_count} vertices | "
             f"{self.bounds.width:.1f} x {self.bounds.height:.1f} mm"
         )
-        if self.arc_count:
+        if self.tabbed:
+            # Tabs flatten the rings they cut, so claiming arcs here would
+            # describe a file the user is not going to get.
+            text += " | tabbed"
+        elif self.arc_count:
             text += f" | {self.arc_count} arcs"
         if self.discarded:
             text += f" | {len(self.discarded)} dropped"
+        if not self.fits_bed and self.bed_size_mm:
+            bed_w, bed_h = self.bed_size_mm
+            text += f" | DOES NOT FIT {bed_w:.0f} x {bed_h:.0f} mm bed"
         return text
 
 
@@ -117,6 +134,13 @@ def run(image_rgb: np.ndarray, params: TraceParams) -> TraceResult:
     if params.fit_arcs:
         _fit_arcs(paths, params.simplify_mm, px_per_mm)
 
+    # Tiling last: each shape is fitted once and then copied, rather than
+    # paying for the arc fit on every tile.
+    paths = tile_paths(paths, params.copies_x, params.copies_y, params.tile_gap_mm)
+
+    bounds = bounds_of(paths)
+    bed = (params.bed_width_mm, params.bed_height_mm) if params.has_bed else None
+
     return TraceResult(
         paths=paths,
         masks=masks,
@@ -125,8 +149,23 @@ def run(image_rgb: np.ndarray, params: TraceParams) -> TraceResult:
         gray=gray,
         px_per_mm=px_per_mm,
         image_size_px=(width_px, height_px),
-        bounds=bounds_of(paths),
+        bounds=bounds,
+        fits_bed=_fits(bounds, bed),
+        bed_size_mm=bed,
+        tabbed=params.tabs_enabled,
     )
+
+
+def _fits(bounds: Bounds | None, bed: tuple[float, float] | None) -> bool:
+    """Whether the job fits the bed.
+
+    Compares extents rather than corner positions: a job placed away from the
+    origin still fits if the operator can move it, and warning about placement
+    would cry wolf on every centred job.
+    """
+    if bounds is None or bed is None:
+        return True
+    return bounds.width <= bed[0] and bounds.height <= bed[1]
 
 
 def _fit_arcs(paths: list[Path], simplify_mm: float, px_per_mm: float) -> None:

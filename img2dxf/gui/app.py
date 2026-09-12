@@ -5,18 +5,27 @@ from __future__ import annotations
 import math
 import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 
 import numpy as np
 
 from ..dxfwrite import units_are_declared, write_dxf
+from ..geometry import width_for_reference
 from ..params import TraceParams
 from ..pipeline import TraceResult
 from ..preprocess import load_image
+from ..svgwrite import write_svg
 from ..transform import normalize_box
 from . import recent
 from .controls import ControlPanel
-from .preview import VIEWS, ViewState, render
+from .preview import (
+    BED_OK_COLOR,
+    BED_OVER_COLOR,
+    VIEWS,
+    ViewState,
+    mm_to_image_px,
+    render,
+)
 from .worker import TraceWorker
 
 try:  # optional: drag-and-drop needs a Tk extension that may not be installed
@@ -29,6 +38,8 @@ IMAGE_TYPES = [
     ("Images", "*.png *.jpg *.jpeg *.bmp *.gif *.tif *.tiff *.webp"),
     ("All files", "*.*"),
 ]
+
+EXPORT_TYPES = [("DXF", "*.dxf"), ("SVG", "*.svg")]
 
 #: Redrawing on every pixel of a window resize is wasteful; wait for a pause.
 _RESIZE_DEBOUNCE_MS = 120
@@ -147,6 +158,12 @@ class App(ttk.Frame):
             ),
         ).pack(side="left", padx=(8, 0))
 
+        self._set_size_button = ttk.Button(
+            bar, text="Set size...", command=self.set_size_from_measure,
+            state="disabled",
+        )
+        self._set_size_button.pack(side="left", padx=(4, 0))
+
         ttk.Button(bar, text="Fit", command=self.fit_view).pack(side="left", padx=(8, 0))
 
     def _build_statusbar(self, parent) -> None:
@@ -155,9 +172,8 @@ class App(ttk.Frame):
         bar.columnconfigure(0, weight=1)
 
         self._status = tk.StringVar(value="Open a PNG or JPEG to begin.")
-        ttk.Label(bar, textvariable=self._status, anchor="w").grid(
-            row=0, column=0, sticky="ew"
-        )
+        self._status_label = ttk.Label(bar, textvariable=self._status, anchor="w")
+        self._status_label.grid(row=0, column=0, sticky="ew")
         self._progress = ttk.Progressbar(bar, mode="indeterminate", length=110)
         # Gridded only while busy, so it does not sit there as dead furniture.
 
@@ -193,6 +209,7 @@ class App(ttk.Frame):
         self._image = rgb
         self._image_path = Path(path)
         self._measure = None
+        self._set_size_button.configure(state="disabled")
         self.clear_crop(retrace=False)
         self._view.fitted = True
 
@@ -234,24 +251,31 @@ class App(ttk.Frame):
             return
 
         default = (self._image_path or Path("untitled")).with_suffix(".dxf").name
-        path = filedialog.asksaveasfilename(
-            title="Export DXF", defaultextension=".dxf",
-            initialfile=default, filetypes=[("DXF", "*.dxf")],
+        chosen = filedialog.asksaveasfilename(
+            title="Export", defaultextension=".dxf",
+            initialfile=default, filetypes=EXPORT_TYPES,
         )
-        if not path:
+        if not chosen:
             return
 
+        path = Path(chosen)
+        is_svg = path.suffix.lower() == ".svg"
         try:
-            write_dxf(self._result.paths, path, self._result_params)
+            if is_svg:
+                write_svg(
+                    self._result.paths, path, self._result_params, self._result.bounds
+                )
+            else:
+                write_dxf(self._result.paths, path, self._result_params)
         except Exception as exc:
             messagebox.showerror("Export failed", str(exc))
             return
 
-        message = f"Wrote {Path(path).name} - {self._result.summary()}"
-        if not units_are_declared(self._result_params.dxf_version):
+        message = f"Wrote {path.name} - {self._result.summary()}"
+        if not is_svg and not units_are_declared(self._result_params.dxf_version):
             # R12 carries no unit, so the operator has to say "mm" on import.
             message += " - R12 stores no units; set mm when importing."
-        self._status.set(message)
+        self._set_status(message, warn=not self._result.fits_bed)
 
     # -- tracing --------------------------------------------------------
 
@@ -267,11 +291,16 @@ class App(ttk.Frame):
             state="normal" if result.path_count else "disabled"
         )
         name = self._image_path.name if self._image_path else "image"
-        self._status.set(f"{name} - {result.summary()}")
+        self._set_status(f"{name} - {result.summary()}", warn=not result.fits_bed)
         self._redraw()
 
     def _on_error(self, error: Exception) -> None:
-        self._status.set(f"Trace failed: {error}")
+        self._set_status(f"Trace failed: {error}", warn=True)
+
+    def _set_status(self, text: str, *, warn: bool = False) -> None:
+        """Status text, in red when it is a warning the operator must see."""
+        self._status.set(text)
+        self._status_label.configure(foreground="#c02020" if warn else "")
 
     def _on_busy(self, busy: bool) -> None:
         if busy:
@@ -291,6 +320,41 @@ class App(ttk.Frame):
         cursor = {"crop": "crosshair", "measure": "tcross"}.get(mode or "", "")
         self._canvas.configure(cursor=cursor)
         self._redraw()
+
+    def set_size_from_measure(self) -> None:
+        """Rescale the job so the measured feature comes out its true size."""
+        if self._measure is None or self._result is None:
+            return
+
+        (x0, y0), (x1, y1) = self._measure
+        measured_px = math.hypot(x1 - x0, y1 - y0)
+        if measured_px <= 0:
+            return
+
+        current_mm = measured_px / self._result.px_per_mm
+        target = simpledialog.askfloat(
+            "Set size",
+            f"That measures {current_mm:.2f} mm.\nWhat is its real size in mm?",
+            parent=self.master,
+            initialvalue=round(current_mm, 2),
+            minvalue=0.001,
+        )
+        if not target:
+            return
+
+        width_px = self._result.image_size_px[0]
+        try:
+            width_mm = width_for_reference(width_px, measured_px, target)
+        except ValueError as exc:
+            messagebox.showerror("Could not set size", str(exc))
+            return
+
+        # This is a statement about physical size, so it has to override DPI
+        # mode rather than be silently ignored by it.
+        self.controls.set_field("size_mode", "fit")
+        self.controls.set_field("width_mm", f"{width_mm:.6g}")
+        self._set_mode(None)
+        self._retrace()
 
     def fit_view(self) -> None:
         self._view.fit(self._displayed_size(), self._canvas_size())
@@ -355,6 +419,7 @@ class App(ttk.Frame):
                 self._view.canvas_to_image(*start),
                 self._view.canvas_to_image(*end),
             )
+            self._set_size_button.configure(state="normal")
             self._redraw()
 
     def _on_pan_start(self, event) -> None:
@@ -413,12 +478,45 @@ class App(ttk.Frame):
         self._photo = render(
             self._view_var.get(), displayed, self._result, self._view, canvas_size,
             show_discarded=self._discard_var.get(),
+            params=self._result_params,
         )
         if self._photo is not None:
             self._canvas.create_image(0, 0, image=self._photo, anchor="nw")
 
+        self._draw_bed()
         self._draw_drag_box()
         self._draw_measure()
+
+    def _draw_bed(self) -> None:
+        """Outline the machine bed, in red when the job will not fit.
+
+        Drawn on the canvas rather than into the preview image: the bed is
+        normally bigger than the artwork, and the image frame would clip it
+        down to a sliver at the edge.
+        """
+        result = self._result
+        if result is None or result.bed_size_mm is None:
+            return
+        if self._view_var.get() not in ("Vectors", "Overlay"):
+            return
+
+        bed_w, bed_h = result.bed_size_mm
+        corners = np.array(
+            [[0.0, 0.0], [bed_w, 0.0], [bed_w, bed_h], [0.0, bed_h]]
+        )
+        _, image_height = result.image_size_px
+        points = [
+            self._view.image_to_canvas(x, y)
+            for x, y in mm_to_image_px(corners, result, image_height)
+        ]
+        flat = [value for point in points for value in point]
+        self._canvas.create_polygon(
+            flat,
+            outline=BED_OK_COLOR if result.fits_bed else BED_OVER_COLOR,
+            fill="",
+            width=2,
+            dash=(6, 4),
+        )
 
     def _draw_drag_box(self) -> None:
         if self._mode != "crop" or self._drag_start is None or self._drag_now is None:

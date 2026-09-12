@@ -10,6 +10,7 @@ import ezdxf
 
 from .geometry import Path
 from .params import TraceParams
+from .tabs import open_segments
 
 #: ``$INSUNITS`` code for millimetres. Without it LightBurn has to guess the
 #: unit on import, which is where "my 100 mm logo came in at 4 mm" comes from.
@@ -85,16 +86,39 @@ def build_document(paths: list[Path], params: TraceParams):
     for path in paths:
         attribs = {"layer": layer_for[path.level]}
         for index, ring in enumerate(path.rings()):
+            if len(ring) < 3:
+                continue
             circle = path.circles.get(index)
+            bulges = path.bulges.get(index)
+
+            if params.tabs_enabled:
+                segments = open_segments(
+                    ring, bulges, circle, params.tab_count, params.tab_mm
+                )
+                if segments is not None:
+                    for segment in segments:
+                        _add_open(msp, segment, use_lwpolyline, attribs)
+                    continue
+                # Too small for tabs: fall through and write it closed.
+
             if circle is not None:
                 cx, cy, radius = circle
                 msp.add_circle((cx, cy), radius, dxfattribs=attribs)
                 continue
-            if len(ring) < 3:
-                continue
-            _add_ring(msp, ring, path.bulges.get(index), use_lwpolyline, attribs)
+            _add_ring(msp, ring, bulges, use_lwpolyline, attribs)
 
     return doc
+
+
+def _add_open(msp, points, use_lwpolyline: bool, attribs: dict) -> None:
+    """Write one open segment - a cut that stops short, leaving a bridge."""
+    if len(points) < 2:
+        return
+    coords = [(float(x), float(y)) for x, y in points]
+    if use_lwpolyline:
+        msp.add_lwpolyline(coords, format="xy", close=False, dxfattribs=attribs)
+    else:
+        msp.add_polyline2d(coords, close=False, dxfattribs=attribs)
 
 
 def _add_ring(msp, ring, bulges, use_lwpolyline: bool, attribs: dict) -> None:

@@ -30,6 +30,23 @@ _MODE_FIELDS = {
 
 _HINT_COLOR = "#555555"
 
+#: Fields a preset must not touch: they describe the user's photo and their
+#: machine, not the tracing style being chosen.
+_NOT_FROM_PRESETS = frozenset(
+    {
+        "rotate_deg",
+        "copies_x",
+        "copies_y",
+        "tile_gap_mm",
+        "bed_width_mm",
+        "bed_height_mm",
+        "tab_count",
+        "tab_mm",
+        "kerf_mm",
+        "kerf_side",
+    }
+)
+
 
 class ControlPanel(ttk.Frame):
     """Left-hand column of parameter widgets."""
@@ -70,12 +87,14 @@ class ControlPanel(ttk.Frame):
         )
 
         self._image_section(1)
-        self._trace_section(2)
-        self._cleanup_section(3)
-        self._vector_section(4)
-        self._machine_section(5)
-        self._size_section(6)
-        self._output_section(7)
+        self._adjust_section(2)
+        self._trace_section(3)
+        self._cleanup_section(4)
+        self._vector_section(5)
+        self._machine_section(6)
+        self._layout_section(7)
+        self._size_section(8)
+        self._output_section(9)
 
     def _image_section(self, row: int) -> None:
         frame = self._section("Image", row)
@@ -105,6 +124,43 @@ class ControlPanel(ttk.Frame):
         var.set(value)
         self._changed()
 
+    def _adjust_section(self, row: int) -> None:
+        frame = self._section("Adjustments", row)
+        self._checkbox(frame, 0, "auto_levels", "Auto levels")
+        self._slider(frame, 1, "brightness", "Brightness", -100, 100)
+        self._slider(frame, 2, "contrast", "Contrast", 0.1, 3.0, decimals=2)
+        self._slider(frame, 3, "gamma", "Gamma", 0.1, 3.0, decimals=2)
+        self._slider(frame, 4, "sharpen", "Sharpen", 0.0, 3.0, decimals=1)
+        ttk.Label(
+            frame,
+            text="Sharpen and Blur undo each other - use one or the other.",
+            wraplength=240, foreground=_HINT_COLOR,
+        ).grid(row=5, column=0, columnspan=3, sticky="w")
+
+    def _layout_section(self, row: int) -> None:
+        frame = self._section("Layout", row)
+
+        self._slider(frame, 0, "copies_x", "Copies across", 1, 12)
+        self._slider(frame, 1, "copies_y", "Copies down", 1, 12)
+        self._slider(frame, 2, "tile_gap_mm", "Tile gap (mm)", 0.0, 20.0, decimals=1)
+
+        bed = ttk.Frame(frame)
+        bed.grid(row=3, column=0, columnspan=3, sticky="w", pady=(4, 0))
+        ttk.Label(bed, text="Bed (mm)").pack(side="left", padx=(0, 6))
+        self._vars["bed_width_mm"] = tk.StringVar(value="0")
+        self._vars["bed_height_mm"] = tk.StringVar(value="0")
+        for field in ("bed_width_mm", "bed_height_mm"):
+            entry = ttk.Entry(bed, textvariable=self._vars[field], width=6)
+            entry.pack(side="left", padx=(0, 4))
+            entry.bind("<Return>", lambda _e: self._changed())
+            entry.bind("<FocusOut>", lambda _e: self._changed())
+
+        ttk.Label(
+            frame,
+            text="Set your machine's bed to get a fit warning. 0 disables it.",
+            wraplength=240, foreground=_HINT_COLOR,
+        ).grid(row=4, column=0, columnspan=3, sticky="w")
+
     def _machine_section(self, row: int) -> None:
         frame = self._section("Machine", row)
 
@@ -131,6 +187,17 @@ class ControlPanel(ttk.Frame):
         self._checkbox(
             frame, 3, "fit_arcs", "Fit arcs and circles", default=True
         )
+
+        self._slider(frame, 4, "tab_count", "Tabs per path", 0, 12)
+        self._slider(frame, 5, "tab_mm", "Tab width (mm)", 0.1, 5.0, decimals=2)
+        ttk.Label(
+            frame,
+            text=(
+                "Tabs leave the part attached to the sheet so it cannot drop "
+                "through. They flatten arcs on the paths they cut."
+            ),
+            wraplength=240, foreground=_HINT_COLOR,
+        ).grid(row=6, column=0, columnspan=3, sticky="w")
 
     def _trace_section(self, row: int) -> None:
         frame = self._section("Tracing", row)
@@ -326,7 +393,7 @@ class ControlPanel(ttk.Frame):
         self._suspend = True
         try:
             for field, var in self._vars.items():
-                if field == "rotate_deg":
+                if field in _NOT_FROM_PRESETS:
                     continue
                 value = getattr(params, field, None)
                 if value is not None:
@@ -359,6 +426,18 @@ class ControlPanel(ttk.Frame):
         """Read the widgets back into a :class:`TraceParams`."""
         values = {field: var.get() for field, var in self._vars.items()}
         return TraceParams(
+            auto_levels=bool(values["auto_levels"]),
+            brightness=int(values["brightness"]),
+            contrast=float(values["contrast"]),
+            gamma=float(values["gamma"]),
+            sharpen=float(values["sharpen"]),
+            tab_count=int(values["tab_count"]),
+            tab_mm=float(values["tab_mm"]),
+            copies_x=int(values["copies_x"]),
+            copies_y=int(values["copies_y"]),
+            tile_gap_mm=float(values["tile_gap_mm"]),
+            bed_width_mm=_number(values["bed_width_mm"], 0.0, allow_zero=True),
+            bed_height_mm=_number(values["bed_height_mm"], 0.0, allow_zero=True),
             rotate_deg=float(values["rotate_deg"]),
             crop=self._crop,
             kerf_mm=float(values["kerf_mm"]),
@@ -403,10 +482,16 @@ def _describe_crop(box) -> str:
     return f"Crop: {(right - left) * 100:.0f}% x {(bottom - top) * 100:.0f}%"
 
 
-def _number(raw, fallback: float) -> float:
-    """Parse a text entry, falling back rather than throwing mid-edit."""
+def _number(raw, fallback: float, *, allow_zero: bool = False) -> float:
+    """Parse a text entry, falling back rather than throwing mid-edit.
+
+    ``allow_zero`` is for fields where zero means "off" rather than "invalid",
+    such as the bed size.
+    """
     try:
         value = float(str(raw).replace(",", "."))
     except (TypeError, ValueError):
         return fallback
-    return value if value > 0 else fallback
+    if value > 0 or (allow_zero and value == 0):
+        return value
+    return fallback

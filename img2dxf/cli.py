@@ -10,6 +10,7 @@ from pathlib import Path
 from .dxfwrite import write_dxf
 from .params import DXF_VERSIONS, PRESETS, TraceParams
 from .pipeline import run_file
+from .svgwrite import write_svg
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -35,6 +36,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--crop", metavar="L,T,R,B",
         help="crop to these fractions of the image, e.g. 0,0,0.5,1 for the left half",
     )
+
+    tone = parser.add_argument_group("image adjustments")
+    tone.add_argument(
+        "--auto-levels", action="store_true", help="stretch the tonal range to 0-255"
+    )
+    tone.add_argument("--brightness", type=int, help="-100 to 100")
+    tone.add_argument("--contrast", type=float, help="1.0 leaves the image alone")
+    tone.add_argument("--gamma", type=float, help="below 1 darkens midtones")
+    tone.add_argument("--sharpen", type=float, help="unsharp strength; opposes --blur")
 
     shape = parser.add_argument_group("tracing")
     shape.add_argument(
@@ -74,11 +84,33 @@ def build_parser() -> argparse.ArgumentParser:
         help="outside keeps the part's size, inside keeps the hole's",
     )
     machine.add_argument(
+        "--tabs", type=int, dest="tab_count",
+        help="uncut bridges per closed path, so parts stay in the sheet",
+    )
+    machine.add_argument(
+        "--tab-mm", type=float, dest="tab_mm", help="width of each bridge, mm"
+    )
+    machine.add_argument(
         "--no-arcs", action="store_true",
         help="keep every curve as straight segments instead of fitting arcs",
     )
 
+    layout = parser.add_argument_group("layout")
+    layout.add_argument(
+        "--copies", metavar="COLSxROWS", help="tile a grid of copies, e.g. 3x2"
+    )
+    layout.add_argument(
+        "--tile-gap", type=float, dest="tile_gap_mm", help="space between copies, mm"
+    )
+    layout.add_argument(
+        "--bed", metavar="WxH", help="machine bed in mm, e.g. 400x300; warns if it will not fit"
+    )
+
     out = parser.add_argument_group("output")
+    out.add_argument(
+        "--format", choices=["dxf", "svg"],
+        help="output format (default: from the output file's extension)",
+    )
     out.add_argument("--dxf-version", choices=DXF_VERSIONS, help="DXF flavour to write")
     out.add_argument("--layer", dest="layer_name", help="base layer name")
     return parser
@@ -92,6 +124,8 @@ def params_from_args(args: argparse.Namespace) -> TraceParams:
         "mode", "threshold", "levels", "blur", "denoise", "close_px", "open_px",
         "simplify_mm", "smooth", "min_area_mm2", "width_mm", "height_mm",
         "dxf_version", "layer_name", "rotate_deg", "kerf_mm", "kerf_side",
+        "brightness", "contrast", "gamma", "sharpen", "tab_count", "tab_mm",
+        "tile_gap_mm",
     )
     overrides = {
         name: getattr(args, name)
@@ -107,8 +141,18 @@ def params_from_args(args: argparse.Namespace) -> TraceParams:
         overrides["origin"] = "center"
     if args.no_arcs:
         overrides["fit_arcs"] = False
+    if args.auto_levels:
+        overrides["auto_levels"] = True
     if args.crop:
         overrides["crop"] = _parse_crop(args.crop)
+    if args.copies:
+        overrides["copies_x"], overrides["copies_y"] = _parse_pair(
+            args.copies, "--copies", int
+        )
+    if args.bed:
+        overrides["bed_width_mm"], overrides["bed_height_mm"] = _parse_pair(
+            args.bed, "--bed", float
+        )
     # A kerf without a side would silently do nothing; assume the common case.
     if args.kerf_mm and not args.kerf_side:
         overrides["kerf_side"] = "outside"
@@ -117,6 +161,17 @@ def params_from_args(args: argparse.Namespace) -> TraceParams:
         overrides["dpi"] = args.dpi
 
     return replace(params, **overrides)
+
+
+def _parse_pair(text: str, flag: str, cast):
+    """Parse a "3x2" style argument into two numbers."""
+    parts = text.lower().replace(" ", "").split("x")
+    if len(parts) != 2:
+        raise argparse.ArgumentTypeError(f"{flag} expects two values, e.g. 3x2")
+    try:
+        return cast(parts[0]), cast(parts[1])
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"{flag} values must be numbers: {exc}")
 
 
 def _parse_crop(text: str) -> tuple[float, float, float, float]:
@@ -132,6 +187,13 @@ def _parse_crop(text: str) -> tuple[float, float, float, float]:
     return left, top, right, bottom
 
 
+def _format_from(output: Path | None) -> str:
+    """Infer the format from the output extension, defaulting to DXF."""
+    if output is not None and output.suffix.lower() == ".svg":
+        return "svg"
+    return "dxf"
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
@@ -142,8 +204,13 @@ def main(argv: list[str] | None = None) -> int:
     params = params_from_args(args)
     result = run_file(args.image, params)
 
-    output = args.output or args.image.with_suffix(".dxf")
-    write_dxf(result.paths, output, params)
+    fmt = args.format or _format_from(args.output)
+    output = args.output or args.image.with_suffix(f".{fmt}")
+
+    if fmt == "svg":
+        write_svg(result.paths, output, params, result.bounds)
+    else:
+        write_dxf(result.paths, output, params)
 
     print(result.summary())
     print(f"wrote {output}")

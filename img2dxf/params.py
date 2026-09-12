@@ -33,6 +33,22 @@ class TraceParams:
     crop: tuple[float, float, float, float] | None = None
     """``(left, top, right, bottom)`` as fractions of the rotated image."""
 
+    # --- image adjustments ---------------------------------------------
+    auto_levels: bool = False
+    """Stretch the tonal range to fill 0-255, ignoring outlier pixels."""
+
+    brightness: int = 0
+    """Added to every pixel, -100 to 100."""
+
+    contrast: float = 1.0
+    """Multiplier about mid-grey. 1.0 leaves the image alone."""
+
+    gamma: float = 1.0
+    """Below 1 darkens midtones, above 1 lightens them."""
+
+    sharpen: float = 0.0
+    """Unsharp-mask strength. Pulls against `blur`; use one or the other."""
+
     # --- preprocessing -------------------------------------------------
     invert: bool = False
     """Trace the light regions instead of the dark ones."""
@@ -105,9 +121,36 @@ class TraceParams:
     fit_arcs: bool = True
     """Replace circular runs with true arcs and circles."""
 
+    tab_count: int = 0
+    """Uncut bridges left in each closed path, so parts stay in the sheet."""
+
+    tab_mm: float = 0.5
+    """Width of each bridge."""
+
+    # --- layout --------------------------------------------------------
+    copies_x: int = 1
+    copies_y: int = 1
+    """Grid of copies to lay out, for filling a sheet in one job."""
+
+    tile_gap_mm: float = 2.0
+    """Space between tiled copies."""
+
+    bed_width_mm: float = 0.0
+    bed_height_mm: float = 0.0
+    """Machine bed size. 0 means no bed configured, so no fit check."""
+
     # --- output --------------------------------------------------------
     dxf_version: str = "R2010"
     layer_name: str = "CUT"
+
+    @property
+    def tabs_enabled(self) -> bool:
+        """Tabs need both a count and a width to do anything."""
+        return self.tab_count > 0 and self.tab_mm > 0
+
+    @property
+    def has_bed(self) -> bool:
+        return self.bed_width_mm > 0 and self.bed_height_mm > 0
 
     def normalized(self) -> "TraceParams":
         """Clamp every field into the range the pipeline can actually use.
@@ -120,6 +163,17 @@ class TraceParams:
             rotate_deg=float(self.rotate_deg) % 360.0,
             crop=_clean_box(self.crop),
             kerf_mm=max(0.0, float(self.kerf_mm)),
+            brightness=_clamp(int(self.brightness), -100, 100),
+            contrast=max(0.1, min(4.0, float(self.contrast))),
+            gamma=max(0.1, min(4.0, float(self.gamma))),
+            sharpen=max(0.0, min(3.0, float(self.sharpen))),
+            tab_count=_clamp(int(self.tab_count), 0, 24),
+            tab_mm=max(0.0, float(self.tab_mm)),
+            copies_x=_clamp(int(self.copies_x), 1, 50),
+            copies_y=_clamp(int(self.copies_y), 1, 50),
+            tile_gap_mm=max(0.0, float(self.tile_gap_mm)),
+            bed_width_mm=max(0.0, float(self.bed_width_mm)),
+            bed_height_mm=max(0.0, float(self.bed_height_mm)),
             kerf_side=self.kerf_side if self.kerf_side in _KERF_SIDES else "none",
             blur=max(0, int(self.blur)),
             denoise=max(0, int(self.denoise)),
