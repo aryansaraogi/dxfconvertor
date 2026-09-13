@@ -17,3 +17,5 @@ ui*.png
 build/
 dist/
 *.manifest
+
+CLAUDE.md
