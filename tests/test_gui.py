@@ -444,3 +444,117 @@ def test_tracing_thread_never_runs_tk_finalizers(root, square_image):
     worker.stop()
     assert delivered, "the trace deadlocked against Tk"
     assert gc.isenabled(), "garbage collection must be restored afterwards"
+
+
+# --- hover help ------------------------------------------------------------
+
+
+def test_every_parameter_has_help():
+    """A control with no explanation is a control nobody will touch."""
+    import dataclasses
+
+    from img2dxf.gui.tooltips import HELP
+    from img2dxf.params import TraceParams
+
+    fields = {f.name for f in dataclasses.fields(TraceParams)}
+    assert fields <= set(HELP), f"no help for: {sorted(fields - set(HELP))}"
+
+
+def test_help_text_is_not_a_restatement_of_the_label():
+    """Help that only repeats the control's name is worse than none."""
+    from img2dxf.gui.tooltips import HELP
+
+    for field, text in HELP.items():
+        assert len(text) > 40, f"{field} has nothing useful to say"
+
+
+def test_controls_carry_hover_help(root):
+    from img2dxf.gui.controls import ControlPanel
+
+    panel = ControlPanel(root, lambda: None)
+    root.update()
+
+    with_help = []
+
+    def walk(widget):
+        for child in widget.winfo_children():
+            if "<Enter>" in child.bind():
+                with_help.append(child)
+            walk(child)
+
+    walk(panel)
+    # Every slider, box and dropdown in the panel, plus their labels.
+    assert len(with_help) > 60
+
+
+def test_a_tooltip_appears_and_goes_away(root):
+    from img2dxf.gui.tooltips import Tooltip
+
+    label = tk.Label(root, text="hover me")
+    label.pack()
+    root.update()
+
+    tip = Tooltip(label, "some help")
+    tip._show()
+    root.update()
+    assert tip._window is not None
+
+    tip._hide()
+    assert tip._window is None
+
+
+def test_a_tooltip_leaves_nothing_scheduled_when_its_widget_dies(root):
+    """An `after` outliving its widget is what prints 'invalid command name'."""
+    from img2dxf.gui.tooltips import Tooltip
+
+    label = tk.Label(root, text="hover me")
+    label.pack()
+    root.update()
+
+    tip = Tooltip(label, "some help")
+    tip._schedule()
+    assert tip._after_id is not None
+
+    label.destroy()
+    root.update()
+    assert tip._after_id is None
+    assert tip._window is None
+
+
+def test_empty_help_attaches_nothing(root):
+    from img2dxf.gui.tooltips import attach
+
+    label = tk.Label(root, text="x")
+    assert attach(label, "") is None
+
+
+def test_the_guide_covers_the_whole_job(root):
+    """It has to get someone from an image file to a cut part."""
+    from img2dxf.gui.tooltips import GUIDE
+
+    body = " ".join(heading + " " + text for heading, text in GUIDE).lower()
+    for topic in ("open", "millimetres", "overlay", "kerf", "export", "calibrat"):
+        assert topic in body, f"the guide never mentions {topic}"
+
+
+def test_the_guide_opens_once(root, square_image, tmp_path):
+    import cv2
+
+    from img2dxf.gui.app import App
+
+    path = tmp_path / "square.png"
+    cv2.imwrite(str(path), square_image)
+
+    app = App(root)
+    root.update()
+    app.show_guide()
+    root.update()
+    first = app._guide
+    assert first is not None
+
+    app.show_guide()  # a second press must raise it, not open another
+    root.update()
+    assert app._guide is first
+
+    first.destroy()
+    app._worker.stop()

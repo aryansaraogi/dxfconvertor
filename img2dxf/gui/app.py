@@ -19,6 +19,7 @@ from ..svgwrite import write_svg
 from ..transform import normalize_box
 from . import recent
 from .controls import ControlPanel
+from .tooltips import GUIDE, TOOLBAR_HELP, attach
 from .preview import (
     BED_OK_COLOR,
     BED_OVER_COLOR,
@@ -70,6 +71,7 @@ class App(ttk.Frame):
         self._drag_start: tuple[float, float] | None = None
         self._drag_now: tuple[float, float] | None = None
         self._pan_from: tuple[float, float] | None = None
+        self._guide: tk.Toplevel | None = None
         self._measure: tuple[tuple[float, float], tuple[float, float]] | None = None
 
         self._build()
@@ -115,23 +117,35 @@ class App(ttk.Frame):
         self.master.bind("<Control-o>", lambda _e: self.open_image())
         self.master.bind("<Control-s>", lambda _e: self.export_dxf())
         self.master.bind("<Key-f>", lambda _e: self.fit_view())
+        self.master.bind("<F1>", lambda _e: self.show_guide())
         self.master.bind("<Escape>", lambda _e: self._set_mode(None))
 
     def _build_toolbar(self, parent) -> None:
         bar = ttk.Frame(parent)
         bar.grid(row=0, column=0, sticky="ew", pady=(0, 6))
 
-        ttk.Button(bar, text="Open...", command=self.open_image).pack(side="left")
+        # Packed before the left-hand buttons so it keeps its corner even when
+        # the toolbar is full; pack gives space in the order it is claimed.
+        help_button = ttk.Button(bar, text="Help", width=6, command=self.show_guide)
+        help_button.pack(side="right")
+        attach(help_button, "A short walkthrough of how to use this. Keyboard: F1.")
+
+        open_button = ttk.Button(bar, text="Open...", command=self.open_image)
+        open_button.pack(side="left")
+        attach(open_button, TOOLBAR_HELP["open"])
+
         self._recent_button = ttk.Menubutton(bar, text="Recent")
         self._recent_menu = tk.Menu(self._recent_button, tearoff=False)
         self._recent_button.configure(menu=self._recent_menu)
         self._recent_button.pack(side="left", padx=(4, 0))
+        attach(self._recent_button, TOOLBAR_HELP["recent"])
         self._refresh_recent()
 
         self._export_button = ttk.Button(
             bar, text="Export DXF...", command=self.export_dxf, state="disabled"
         )
         self._export_button.pack(side="left", padx=6)
+        attach(self._export_button, TOOLBAR_HELP["export"])
 
         settings_button = ttk.Menubutton(bar, text="Settings")
         menu = tk.Menu(settings_button, tearoff=False)
@@ -142,6 +156,7 @@ class App(ttk.Frame):
         menu.add_command(label="Delete preset...", command=self.delete_preset)
         settings_button.configure(menu=menu)
         settings_button.pack(side="left", padx=(0, 6))
+        attach(settings_button, TOOLBAR_HELP["settings"])
 
         self._view_var = tk.StringVar(value="Overlay")
         ttk.Label(bar, text="View").pack(side="left", padx=(16, 4))
@@ -151,39 +166,50 @@ class App(ttk.Frame):
         )
         view.pack(side="left")
         view.bind("<<ComboboxSelected>>", lambda _e: self._redraw())
+        attach(view, TOOLBAR_HELP["view"])
 
         self._discard_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(
+        dropped = ttk.Checkbutton(
             bar, text="Show dropped", variable=self._discard_var,
             command=self._redraw,
-        ).pack(side="left", padx=(12, 0))
+        )
+        dropped.pack(side="left", padx=(12, 0))
+        attach(dropped, TOOLBAR_HELP["dropped"])
 
         ttk.Separator(bar, orient="vertical").pack(side="left", fill="y", padx=8)
 
         self._crop_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(
+        crop = ttk.Checkbutton(
             bar, text="Crop", variable=self._crop_var,
             command=lambda: self._set_mode("crop" if self._crop_var.get() else None),
-        ).pack(side="left")
-        ttk.Button(bar, text="Clear crop", command=self.clear_crop).pack(
-            side="left", padx=4
         )
+        crop.pack(side="left")
+        attach(crop, TOOLBAR_HELP["crop"])
+
+        clear = ttk.Button(bar, text="Clear crop", command=self.clear_crop)
+        clear.pack(side="left", padx=4)
+        attach(clear, TOOLBAR_HELP["clear_crop"])
 
         self._measure_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(
+        measure = ttk.Checkbutton(
             bar, text="Measure", variable=self._measure_var,
             command=lambda: self._set_mode(
                 "measure" if self._measure_var.get() else None
             ),
-        ).pack(side="left", padx=(8, 0))
+        )
+        measure.pack(side="left", padx=(8, 0))
+        attach(measure, TOOLBAR_HELP["measure"])
 
         self._set_size_button = ttk.Button(
             bar, text="Set size...", command=self.set_size_from_measure,
             state="disabled",
         )
         self._set_size_button.pack(side="left", padx=(4, 0))
+        attach(self._set_size_button, TOOLBAR_HELP["set_size"])
 
-        ttk.Button(bar, text="Fit", command=self.fit_view).pack(side="left", padx=(8, 0))
+        fit = ttk.Button(bar, text="Fit", command=self.fit_view)
+        fit.pack(side="left", padx=(8, 0))
+        attach(fit, TOOLBAR_HELP["fit"])
 
     def _build_statusbar(self, parent) -> None:
         bar = ttk.Frame(parent)
@@ -295,6 +321,57 @@ class App(ttk.Frame):
             # R12 carries no unit, so the operator has to say "mm" on import.
             message += " - R12 stores no units; set mm when importing."
         self._set_status(message, warn=not self._result.fits_bed)
+
+    # -- help -------------------------------------------------------------
+
+    def show_guide(self) -> None:
+        """A short walkthrough, for someone opening this for the first time."""
+        if getattr(self, "_guide", None) is not None:
+            try:
+                self._guide.lift()
+                return
+            except tk.TclError:
+                self._guide = None  # it was closed
+
+        window = tk.Toplevel(self.master)
+        window.title("How to use img2dxf")
+        window.geometry("560x520")
+        window.transient(self.master)
+
+        frame = ttk.Frame(window, padding=(14, 12))
+        frame.pack(fill="both", expand=True)
+
+        text = tk.Text(
+            frame, wrap="word", relief="flat", padx=4, pady=4,
+            background=window.cget("background"), borderwidth=0,
+            # Inherited text colours vary by theme; state it rather than
+            # hope, since this window is nothing but text.
+            foreground="#1a1a1a",
+            # Tk's Text defaults to a fixed-width font, which reads like a
+            # log file rather than like prose.
+            font="TkDefaultFont",
+        )
+        scroll = ttk.Scrollbar(frame, orient="vertical", command=text.yview)
+        text.configure(yscrollcommand=scroll.set)
+        # The scrollbar claims its width first; packed after the text, which
+        # expands, it would be squeezed out of the window entirely.
+        scroll.pack(side="right", fill="y")
+        text.pack(side="left", fill="both", expand=True)
+
+        text.tag_configure("head", font=("TkDefaultFont", 11, "bold"),
+                           spacing1=12, spacing3=4)
+        text.tag_configure("body", spacing3=8, lmargin1=2, lmargin2=14)
+
+        for heading, body in GUIDE:
+            if heading:
+                text.insert("end", heading + "\n", "head")
+            text.insert("end", body + "\n", "body")
+
+        text.configure(state="disabled")
+
+        ttk.Button(window, text="Close", command=window.destroy).pack(pady=(0, 10))
+        window.protocol("WM_DELETE_WINDOW", window.destroy)
+        self._guide = window
 
     # -- settings -------------------------------------------------------
 

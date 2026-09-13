@@ -62,6 +62,12 @@ python -m venv .venv
 
 `--help` lists every flag. Any flag overrides the preset it is combined with.
 
+## Finding your way around
+
+Rest the pointer on any control and it explains itself — what it does, when you would
+reach for it, and what a bad setting looks like. The **Help** button in the toolbar
+(or F1) opens a short walkthrough that takes you from an image file to a cut part.
+
 ## Saving a job
 
 The panel opens with the controls a job needs to be right — what it is, how big, and

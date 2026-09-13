@@ -276,6 +276,7 @@ at true size.
 | [gui/preview.py](img2dxf/gui/preview.py) | `ViewState` + coordinate mapping, and rendering the four views |
 | [gui/worker.py](img2dxf/gui/worker.py) | debounced, single-flight background tracing |
 | [gui/recent.py](img2dxf/gui/recent.py) | recent-files list in `~/.img2dxf/recent.json` |
+| [gui/tooltips.py](img2dxf/gui/tooltips.py) | hover help, and all the user-facing help text |
 
 **Never run the pipeline on the Tk main thread.** `TraceWorker` debounces by 150 ms,
 runs on a background thread, and posts results through a queue that Tk polls. Results
@@ -315,6 +316,29 @@ crop), the machine (kerf, tabs, bed) and layout (copies, gap). Those describe th
 user's photo and their machine, not the tracing style being chosen. Add a field of that
 kind and it belongs in that set.
 
+### Help text (`gui/tooltips.py`)
+
+All of it lives in one module rather than beside each widget, so it reads as one voice
+and a control cannot quietly drift away from its explanation. `HELP` is keyed by
+`TraceParams` field name, and `test_every_parameter_has_help` fails if a new parameter
+arrives without any — which is the point: a control nobody can understand is a control
+nobody will touch. There is also a minimum length check, because help that only restates
+the control's label is worse than none.
+
+Write it for someone at the machine, not someone reading the code: what the control
+does, when you would reach for it, and what going wrong looks like.
+
+`Tooltip` cancels its pending `after` on `<Destroy>`. Tk raises "invalid command name"
+when a timer fires against a widget that has gone, and the panel builds and discards a
+lot of widgets. Bindings use `add="+"` so hover help never displaces a binding a widget
+already had.
+
+Two Tk packing details worth remembering, both of which bit here: `pack` gives space in
+the order it is claimed, so a widget packed `side="right"` *after* an expanding
+neighbour gets squeezed out entirely — the Help button and the guide's scrollbar both
+had to be packed first. And `tk.Text` defaults to a fixed-width font, which makes prose
+read like a log file.
+
 ## DXF constraints worth remembering
 
 - `$INSUNITS = 4` (mm) is what makes LightBurn import at the right scale.
@@ -353,6 +377,7 @@ job:
 - `test_tracing_thread_never_runs_tk_finalizers` — the Tk/GC deadlock.
 - `test_every_advertised_feature_is_actually_there` — the calibration checklist must not
   ask for a measurement the file does not contain.
+- `test_every_parameter_has_help` — every knob must explain itself.
 - `test_y_axis_is_flipped_relative_to_dxf` and `test_unflipping_the_svg_reproduces_the_dxf`
   — the SVG axis flip.
 - `test_reference_scaling_survives_the_whole_pipeline` — declaring a feature's real size

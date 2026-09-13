@@ -7,6 +7,7 @@ from tkinter import ttk
 from typing import Callable
 
 from .. import settings as settings_io
+from . import tooltips
 from ..params import DEFAULT_PRESET, DXF_VERSIONS, PRESETS, TraceParams
 
 MODES = ("otsu", "fixed", "adaptive", "posterize", "edges")
@@ -97,12 +98,15 @@ class ControlPanel(ttk.Frame):
         )
         self._preset_combo = combo
         self.refresh_presets()
+        tooltips.attach(combo, tooltips.TOOLBAR_HELP["preset"])
 
         self._advanced_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(
+        advanced = ttk.Checkbutton(
             preset_box, text="Advanced", variable=self._advanced_var,
             command=self._apply_advanced,
-        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        )
+        advanced.grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        tooltips.attach(advanced, tooltips.TOOLBAR_HELP["advanced"])
 
         self._image_section(1)
         self._adjust_section(2)
@@ -122,6 +126,9 @@ class ControlPanel(ttk.Frame):
 
         buttons = ttk.Frame(frame)
         buttons.grid(row=1, column=0, columnspan=3, sticky="w", pady=(2, 0))
+        tooltips.attach(
+            buttons, "Turn the image a quarter turn at a time, or back upright."
+        )
         for label, delta in (("-90", -90), ("0", None), ("+90", 90)):
             ttk.Button(
                 buttons, text=label, width=5,
@@ -130,6 +137,7 @@ class ControlPanel(ttk.Frame):
 
         self._crop_label = ttk.Label(frame, text="", foreground=_HINT_COLOR)
         self._crop_label.grid(row=2, column=0, columnspan=3, sticky="w", pady=(4, 0))
+        tooltips.attach_field(self._crop_label, "crop")
         ttk.Label(
             frame,
             text="Drag on the preview with Crop enabled to frame the artwork.",
@@ -148,6 +156,7 @@ class ControlPanel(ttk.Frame):
                 box, text=label, value=value,
                 variable=self._vars["detail"], command=self._changed,
             ).pack(side="left")
+        tooltips.attach_children(box, tooltips.HELP["detail"])
 
         ttk.Label(
             frame,
@@ -195,6 +204,8 @@ class ControlPanel(ttk.Frame):
             entry.pack(side="left", padx=(0, 4))
             entry.bind("<Return>", lambda _e: self._changed())
             entry.bind("<FocusOut>", lambda _e: self._changed())
+            tooltips.attach_field(entry, "bed_width_mm")
+        tooltips.attach(bed, tooltips.HELP["bed_width_mm"])
 
         ttk.Label(
             frame,
@@ -215,6 +226,7 @@ class ControlPanel(ttk.Frame):
         )
         side.grid(row=1, column=1, sticky="w", pady=2)
         side.bind("<<ComboboxSelected>>", lambda _e: self._changed())
+        tooltips.attach_field(side, "kerf_side")
 
         ttk.Label(
             frame,
@@ -256,6 +268,7 @@ class ControlPanel(ttk.Frame):
         )
         mode_combo.grid(row=0, column=1, columnspan=2, sticky="ew", pady=2)
         mode_combo.bind("<<ComboboxSelected>>", lambda _e: self._mode_changed())
+        tooltips.attach_field(mode_combo, "mode")
 
         self._mode_hint = ttk.Label(
             frame, text="", wraplength=230, foreground=_HINT_COLOR
@@ -317,26 +330,30 @@ class ControlPanel(ttk.Frame):
         for column, (label, value) in enumerate(
             (("Fit to width", "fit"), ("Use image DPI", "dpi"))
         ):
-            ttk.Radiobutton(
+            button = ttk.Radiobutton(
                 frame,
                 text=label,
                 value=value,
                 variable=self._vars["size_mode"],
                 command=self._changed,
-            ).grid(row=0, column=column, sticky="w", pady=2)
+            )
+            button.grid(row=0, column=column, sticky="w", pady=2)
+            tooltips.attach_field(button, "size_mode")
 
         self._entry(frame, 1, "width_mm", "Width (mm)", "100")
         self._entry(frame, 2, "dpi", "DPI", "96")
 
         self._vars["origin"] = tk.StringVar(value="bottom-left")
-        ttk.Checkbutton(
+        centre = ttk.Checkbutton(
             frame,
             text="Centre output on 0,0",
             variable=self._vars["origin"],
             onvalue="center",
             offvalue="bottom-left",
             command=self._changed,
-        ).grid(row=3, column=0, columnspan=3, sticky="w", pady=2)
+        )
+        centre.grid(row=3, column=0, columnspan=3, sticky="w", pady=2)
+        tooltips.attach_field(centre, "origin")
 
     def _output_section(self, row: int) -> None:
         frame = self._section("Output", row)
@@ -352,6 +369,7 @@ class ControlPanel(ttk.Frame):
         )
         version.grid(row=0, column=1, sticky="w", pady=2)
         version.bind("<<ComboboxSelected>>", lambda _e: self._changed())
+        tooltips.attach_field(version, "dxf_version")
 
         self._entry(frame, 1, "layer_name", "Layer", "CUT")
         ttk.Label(
@@ -400,32 +418,44 @@ class ControlPanel(ttk.Frame):
             readout.set(f"{raw:.{decimals}f}")
             self._changed()
 
-        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w")
-        ttk.Scale(
+        name = ttk.Label(parent, text=label)
+        name.grid(row=row, column=0, sticky="w")
+
+        scale = ttk.Scale(
             parent,
             from_=low,
             to=high,
             variable=var,
             orient="horizontal",
             command=on_move,
-        ).grid(row=row, column=1, sticky="ew", padx=4, pady=1)
-        ttk.Label(parent, textvariable=readout, width=5, anchor="e").grid(
-            row=row, column=2, sticky="e"
         )
+        scale.grid(row=row, column=1, sticky="ew", padx=4, pady=1)
+
+        value = ttk.Label(parent, textvariable=readout, width=5, anchor="e")
+        value.grid(row=row, column=2, sticky="e")
+
+        # The label is the easiest thing to hover, so it gets help too.
+        for widget in (name, scale, value):
+            tooltips.attach_field(widget, field)
 
     def _checkbox(self, parent, row, field, label, *, default=False) -> None:
         var = tk.BooleanVar(value=default)
         self._vars[field] = var
-        ttk.Checkbutton(parent, text=label, variable=var, command=self._changed).grid(
-            row=row, column=0, columnspan=3, sticky="w", pady=2
+        box = ttk.Checkbutton(
+            parent, text=label, variable=var, command=self._changed
         )
+        box.grid(row=row, column=0, columnspan=3, sticky="w", pady=2)
+        tooltips.attach_field(box, field)
 
     def _entry(self, parent, row, field, label, default) -> None:
         var = tk.StringVar(value=default)
         self._vars[field] = var
-        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w")
+        name = ttk.Label(parent, text=label)
+        name.grid(row=row, column=0, sticky="w")
         entry = ttk.Entry(parent, textvariable=var, width=10)
         entry.grid(row=row, column=1, sticky="w", pady=2)
+        for widget in (name, entry):
+            tooltips.attach_field(widget, field)
         # Retrace on Enter or focus-out rather than per keystroke, so a
         # half-typed "1" in "100" never triggers a run at 1 mm.
         entry.bind("<Return>", lambda _e: self._changed())
