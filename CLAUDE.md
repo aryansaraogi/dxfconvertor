@@ -54,6 +54,9 @@ gamma, sharpen) ahead of the existing denoise and blur.
 | [tabs.py](img2dxf/tabs.py) | cut rings into open segments, leaving uncut bridges |
 | [dxfwrite.py](img2dxf/dxfwrite.py) | ezdxf export, version handling, layers, bulges |
 | [svgwrite.py](img2dxf/svgwrite.py) | SVG export at true mm size |
+| [order.py](img2dxf/order.py) | nearest-neighbour cut ordering, holes before outlines |
+| [settings.py](img2dxf/settings.py) | job settings and named presets, as JSON |
+| [calibrate.py](img2dxf/calibrate.py) | generates a test piece for checking a real machine |
 | [cli.py](img2dxf/cli.py) | argparse front end |
 | [gui/](img2dxf/gui/) | Tkinter shell — see below |
 
@@ -162,6 +165,38 @@ corners of L, T and E. `smooth_ring` pins vertices whose turn exceeds `corner_de
 splits the ring into runs between them, and smooths each run as an *open* polyline with
 fixed endpoints.
 
+### Settings (`settings.py`)
+
+Fields are enumerated from the dataclass with `dataclasses.fields`, never listed by
+hand, so a new parameter persists the moment it is declared — the same reason
+`TraceParams` is the only place a knob is defined. `from_dict` ignores unknown keys and
+defaults missing ones, so a file from another version loads instead of failing, and
+always ends with `normalized()` so a hand-edited file cannot inject a nonsense value.
+
+`ControlPanel.set_params(framing=True)` is what makes loading a job different from
+picking a preset: a preset must leave `_NOT_FROM_PRESETS` alone (that is the user's
+photo and their machine), while restoring a saved job is supposed to bring all of it
+back.
+
+### Cut ordering (`order.py`)
+
+Runs last in the pipeline, after tiling — which is exactly when the number of paths, and
+so the travel between them, starts to dominate. Only the sequence changes; no geometry
+is touched, and there is a test asserting the vertex count and bounds are identical.
+
+Two rules: a shape's holes are cut before its outline (a freed part can shift, and a
+hole cut afterwards would be out of place), and tone levels are never interleaved
+(layers are how the operator assigns power and speed, and a shorter path is not worth
+scrambling that).
+
+### Calibration (`calibrate.py`)
+
+The checklist prints the sizes **as they appear in the written file**, not the nominal
+round numbers. They differ by a few hundredths because the traced edge follows the
+artwork's anti-aliased midpoint, and the question being asked is whether the machine
+reproduces the file. Kerf, straightening and smoothing are all off on the test piece, so
+that an off-size part means the machine or the kerf setting and not a finishing pass.
+
 ### Kerf (`kerf.py`)
 
 Clipper derives grow-vs-shrink from **winding direction**, so orientation is enforced
@@ -247,6 +282,16 @@ runs on a background thread, and posts results through a queue that Tk polls. Re
 carry a token; anything older than the newest request is discarded so a slow trace
 cannot overwrite a newer one. New work goes through `App._retrace()`.
 
+**And never let the collector run on that thread either.** `_run` wraps the pipeline in
+`_no_garbage_collection()`. A collection triggered inside the worker runs finalizers
+*there*, and `tkinter.Variable.__del__` calls into Tcl — which is not thread-safe, so it
+deadlocks against the main loop. The app freezes mid-trace with the progress bar still
+spinning, and every symptom points at the pipeline having hung when it has not. This was
+found only by dumping thread stacks (`faulthandler.dump_traceback`) at the point of the
+hang; no amount of reasoning about the queue and token logic would have reached it,
+because none of that was wrong. `test_tracing_thread_never_runs_tk_finalizers` reproduces
+the conditions.
+
 **Coordinate mapping lives in `ViewState`**, not in the window: the crop handles and
 the measure tool both need canvas ⇄ image conversion, and two copies would drift.
 `ViewState.fitted` records that the view is still auto-fitting, so loading an image or
@@ -303,6 +348,11 @@ job:
 - `test_a_noisy_curve_is_not_chamfered` and `test_curves_are_never_flattened` — the two
   ways straightening can eat a curve.
 - `test_supersampled_circle_is_still_recognised` — the source-pixel tolerance floor.
+- `test_saved_settings_reproduce_the_trace` and `test_every_field_is_persisted` — a job
+  must come back exactly, including parameters added after the file was written.
+- `test_tracing_thread_never_runs_tk_finalizers` — the Tk/GC deadlock.
+- `test_every_advertised_feature_is_actually_there` — the calibration checklist must not
+  ask for a measurement the file does not contain.
 - `test_y_axis_is_flipped_relative_to_dxf` and `test_unflipping_the_svg_reproduces_the_dxf`
   — the SVG axis flip.
 - `test_reference_scaling_survives_the_whole_pipeline` — declaring a feature's real size

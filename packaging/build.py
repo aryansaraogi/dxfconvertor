@@ -1,4 +1,4 @@
-"""Build the standalone executable.
+r"""Build the standalone executable.
 
     .\.venv\Scripts\python.exe packaging\build.py
 
@@ -22,7 +22,7 @@ def main() -> int:
     except ImportError:
         print(
             "PyInstaller is not installed. Run:\n"
-            "  .\.venv\Scripts\python.exe -m pip install pyinstaller",
+            r"  .\.venv\Scripts\python.exe -m pip install pyinstaller",
             file=sys.stderr,
         )
         return 1

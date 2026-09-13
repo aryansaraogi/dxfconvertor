@@ -279,3 +279,7 @@ PRESETS: dict[str, TraceParams] = {
 }
 
 DEFAULT_PRESET = "Logo / clipart"
+
+#: Built-in presets are the starting points shipped with the tool; the
+#: user's own live in ~/.img2dxf/presets.json and are merged over these.
+#: See :mod:`img2dxf.settings`.

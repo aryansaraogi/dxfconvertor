@@ -7,6 +7,22 @@ into closed polylines (holes included, so the middle of an "O" stays open), circ
 runs are fitted back to true arcs, and the result is written as a DXF scaled to real
 millimetres — optionally offset to compensate for the width of your beam.
 
+## Check it against your machine first
+
+Nothing in this project has been verified on real hardware. Before trusting it
+with material, cut the calibration piece:
+
+```powershell
+.\.venv\Scripts\python.exe -m img2dxf.calibrate -o calibration.dxf
+```
+
+It writes an 80 x 50 mm plate with a large hole, a small hole, a slot and a square
+window, and prints what each should measure **as drawn in the file**. Cut it, measure
+the part, and the differences tell you which setting is wrong — everything off by the
+same percentage is an import-scale problem, everything off by the same amount is your
+kerf, and only-the-small-features off means the kerf is eating them. Kerf is
+deliberately zero on the test piece, so the error you measure *is* your kerf.
+
 ## Install
 
 ```powershell
@@ -15,6 +31,14 @@ python -m venv .venv
 ```
 
 ## Use it
+
+**A standalone build** — no Python, no virtualenv:
+
+```powershell
+.\.venv\Scripts\python.exe packaging\build.py     # produces dist\img2dxf.exe
+```
+
+
 
 **GUI** — load an image, adjust, watch the preview, export:
 
@@ -37,6 +61,34 @@ python -m venv .venv
 ```
 
 `--help` lists every flag. Any flag overrides the preset it is combined with.
+
+## Saving a job
+
+The panel opens with the controls a job needs to be right — what it is, how big, and
+what to write. Tick **Advanced** for the tuning sections (adjustments, cleanup, vectors,
+machine, layout).
+
+There are over forty settings, so **Settings → Save settings…** writes them all to JSON
+next to the image, and **Load settings…** brings the job back exactly. **Save as
+preset…** puts a tuned set in the preset dropdown alongside the built-in ones.
+
+From the command line:
+
+```powershell
+.\.venv\Scripts\python.exe -m img2dxf.cli logo.png -o logo.dxf --width-mm 80 --save-settings
+.\.venv\Scripts\python.exe -m img2dxf.cli logo.png -o logo.dxf --settings logo.png.img2dxf.json
+.\.venv\Scripts\python.exe -m img2dxf.cli --list-presets
+```
+
+A settings file loses to any flag you also pass, so it works as a starting point.
+
+## Cut order
+
+Paths are ordered so the head travels less — nearest-neighbour, with a shape's holes cut
+before its outline, since a part that is already free can shift. Tone levels stay
+grouped, because layers are how power and speed get assigned. Typically 60% less travel
+on scattered work; the status bar reports it. `--no-order` writes them in the order
+found.
 
 ## Tracing modes
 
