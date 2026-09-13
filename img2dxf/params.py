@@ -150,6 +150,9 @@ class TraceParams:
     tab_mm: float = 0.5
     """Width of each bridge."""
 
+    optimize_order: bool = True
+    """Reorder paths so the head travels less. Geometry is unchanged."""
+
     # --- layout --------------------------------------------------------
     copies_x: int = 1
     copies_y: int = 1

@@ -6,6 +6,7 @@ import tkinter as tk
 from tkinter import ttk
 from typing import Callable
 
+from .. import settings as settings_io
 from ..params import DEFAULT_PRESET, DXF_VERSIONS, PRESETS, TraceParams
 
 MODES = ("otsu", "fixed", "adaptive", "posterize", "edges")
@@ -29,6 +30,11 @@ _MODE_FIELDS = {
 }
 
 _HINT_COLOR = "#555555"
+
+#: Sections folded away unless Advanced is ticked. What stays visible is
+#: what a job needs to be correct — what it is, how big, and where it goes.
+#: The rest is tuning, and nine sections at once is too many to scan.
+_ADVANCED_SECTIONS = ("Adjustments", "Cleanup", "Vectors", "Machine", "Layout")
 
 #: Fields a preset must not touch: they describe the user's photo and their
 #: machine, not the tracing style being chosen.
@@ -58,12 +64,15 @@ class ControlPanel(ttk.Frame):
         self._suspend = False
         self._vars: dict[str, tk.Variable] = {}
         self._mode_rows: dict[str, list[tk.Widget]] = {}
+        self._sections: dict[str, ttk.LabelFrame] = {}
+        self._user_presets: dict[str, TraceParams] = {}
         # The crop box is set by dragging on the preview, not by a widget, so
         # it lives here rather than in a Tk variable.
         self._crop: tuple[float, float, float, float] | None = None
 
         self._build()
         self.apply_preset(DEFAULT_PRESET)
+        self._apply_advanced()
 
     # -- construction ---------------------------------------------------
 
@@ -86,6 +95,14 @@ class ControlPanel(ttk.Frame):
             "<<ComboboxSelected>>",
             lambda _event: self.apply_preset(self.preset_var.get()),
         )
+        self._preset_combo = combo
+        self.refresh_presets()
+
+        self._advanced_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            preset_box, text="Advanced", variable=self._advanced_var,
+            command=self._apply_advanced,
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 0))
 
         self._image_section(1)
         self._adjust_section(2)
@@ -210,6 +227,9 @@ class ControlPanel(ttk.Frame):
 
         self._checkbox(
             frame, 3, "fit_arcs", "Fit arcs and circles", default=True
+        )
+        self._checkbox(
+            frame, 8, "optimize_order", "Shorten head travel", default=True
         )
 
         self._slider(frame, 4, "tab_count", "Tabs per path", 0, 12)
@@ -347,7 +367,20 @@ class ControlPanel(ttk.Frame):
         frame = ttk.LabelFrame(self, text=title, padding=(8, 4))
         frame.grid(row=row, column=0, sticky="ew", pady=4)
         frame.columnconfigure(1, weight=1)
+        self._sections[title] = frame
         return frame
+
+    def _apply_advanced(self) -> None:
+        """Show or hide the tuning sections."""
+        show = bool(self._advanced_var.get())
+        for title in _ADVANCED_SECTIONS:
+            frame = self._sections.get(title)
+            if frame is None:
+                continue
+            if show:
+                frame.grid()
+            else:
+                frame.grid_remove()
 
     def _slider(
         self, parent, row, field, label, low, high, *, decimals=0, step=1
@@ -416,26 +449,44 @@ class ControlPanel(ttk.Frame):
         if not self._suspend:
             self._on_change()
 
+    def refresh_presets(self, select: str | None = None) -> None:
+        """Reload the user's presets into the dropdown."""
+        self._user_presets = settings_io.load_presets()
+        names = sorted({**PRESETS, **self._user_presets})
+        self._preset_combo.configure(values=names)
+        if select is not None and select in names:
+            self.preset_var.set(select)
+
+    def presets(self) -> dict[str, TraceParams]:
+        """Built-in presets plus the user's own, which win on a name clash."""
+        return {**PRESETS, **self._user_presets}
+
     def apply_preset(self, name: str) -> None:
         """Load a preset into the widgets, re-tracing once at the end."""
-        params = PRESETS.get(name)
+        params = self.presets().get(name)
         if params is not None:
             self.set_params(params)
 
-    def set_params(self, params: TraceParams) -> None:
+    def set_params(self, params: TraceParams, *, framing: bool = False) -> None:
         """Load a whole parameter set into the widgets.
 
-        Framing is left alone: rotation and crop describe the photo in front
-        of the user, so switching preset must not un-straighten their scan.
+        ``framing`` decides whether the fields in `_NOT_FROM_PRESETS` come
+        along. A preset must leave them alone — rotation and crop describe the
+        photo in front of the user, and kerf and bed describe their machine.
+        Restoring a saved job is the opposite case: it is supposed to bring
+        back everything, framing included.
         """
         self._suspend = True
         try:
             for field, var in self._vars.items():
-                if field in _NOT_FROM_PRESETS:
+                if not framing and field in _NOT_FROM_PRESETS:
                     continue
                 value = getattr(params, field, None)
                 if value is not None:
                     var.set(value)
+            if framing:
+                self._crop = params.crop
+                self._crop_label.configure(text=_describe_crop(params.crop))
         finally:
             self._suspend = False
         self._mode_changed()
@@ -464,6 +515,7 @@ class ControlPanel(ttk.Frame):
         """Read the widgets back into a :class:`TraceParams`."""
         values = {field: var.get() for field, var in self._vars.items()}
         return TraceParams(
+            optimize_order=bool(values["optimize_order"]),
             detail=int(values["detail"]),
             corner_deg=float(values["corner_deg"]),
             straighten_mm=float(values["straighten_mm"]),

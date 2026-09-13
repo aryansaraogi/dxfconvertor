@@ -12,3 +12,8 @@ sample.png
 grad.png
 check_*.png
 ui*.png
+
+# PyInstaller
+build/
+dist/
+*.manifest

@@ -9,6 +9,8 @@ rather than queued up behind it.
 
 from __future__ import annotations
 
+import contextlib
+import gc
 import queue
 import threading
 import tkinter as tk
@@ -25,6 +27,28 @@ DEBOUNCE_MS = 150
 
 #: How often Tk checks the result queue.
 POLL_MS = 40
+
+
+@contextlib.contextmanager
+def _no_garbage_collection():
+    """Keep the collector from running while this thread traces.
+
+    A collection triggered here runs finalizers on *this* thread, and Tk's
+    `Variable.__del__` calls into Tcl. Tkinter is not thread-safe, so that
+    call deadlocks against the main loop and the app freezes mid-trace with
+    the progress bar still spinning — an intermittent hang that looks like
+    the pipeline hung, and is nothing to do with it.
+
+    A trace is short and its arrays are freed by reference counting, so the
+    pause costs nothing measurable.
+    """
+    was_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        yield
+    finally:
+        if was_enabled:
+            gc.enable()
 
 
 @dataclass(slots=True)
@@ -106,11 +130,12 @@ class TraceWorker:
         threading.Thread(target=self._run, args=(job,), daemon=True).start()
 
     def _run(self, job: _Job) -> None:
-        try:
-            result = run(job.image, job.params)
-            self._results.put((job.token, job.params, result, None))
-        except Exception as exc:  # surfaced in the status bar, not a crash
-            self._results.put((job.token, job.params, None, exc))
+        with _no_garbage_collection():
+            try:
+                result = run(job.image, job.params)
+                self._results.put((job.token, job.params, result, None))
+            except Exception as exc:  # surfaced in the status bar, not a crash
+                self._results.put((job.token, job.params, None, exc))
 
     def _drain(self) -> None:
         """Deliver the newest finished result and discard stale ones."""

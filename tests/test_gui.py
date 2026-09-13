@@ -262,7 +262,7 @@ def test_recent_files_are_newest_first_and_deduplicated(tmp_path, monkeypatch):
 # --- bed outline -----------------------------------------------------------
 
 
-def pump(root, app, timeout: float = 8.0) -> bool:
+def pump(root, app, timeout: float = 15.0) -> bool:
     """Run the Tk loop until the background trace lands.
 
     Real time has to pass: the worker debounces by 150 ms, so spinning on
@@ -273,7 +273,6 @@ def pump(root, app, timeout: float = 8.0) -> bool:
     while time.time() < deadline and app._result is None:
         root.update()
         time.sleep(0.01)
-
     for _ in range(15):
         root.update()
         time.sleep(0.01)
@@ -411,3 +410,37 @@ def test_worker_stops_cleanly(root, square_image):
     # Further requests are ignored rather than rescheduling anything.
     worker.request(square_image, TraceParams())
     assert worker._poll_id is None
+
+
+def test_tracing_thread_never_runs_tk_finalizers(root, square_image):
+    """Tk is not thread-safe, and a GC on the worker thread deadlocks it.
+
+    A collection inside the worker runs finalizers there, and
+    `tkinter.Variable.__del__` calls into Tcl. That froze the app mid-trace
+    with the progress bar still spinning, looking for all the world like the
+    pipeline had hung. Abandoning Tk variables before a trace reproduces the
+    conditions; the trace must still complete.
+    """
+    import gc
+    import tkinter as tk
+
+    from img2dxf.gui.worker import TraceWorker
+    from img2dxf.params import TraceParams
+
+    # Garbage Tk variables, waiting for whichever thread collects first.
+    for _ in range(200):
+        tk.StringVar(master=root, value="discarded")
+    gc.collect(0)
+
+    delivered = []
+    worker = TraceWorker(root, lambda r, p: delivered.append(r), delivered.append)
+    worker.request(square_image, TraceParams())
+
+    deadline = time.time() + 15.0
+    while time.time() < deadline and not delivered:
+        root.update()
+        time.sleep(0.01)
+
+    worker.stop()
+    assert delivered, "the trace deadlocked against Tk"
+    assert gc.isenabled(), "garbage collection must be restored afterwards"

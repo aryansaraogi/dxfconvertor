@@ -10,6 +10,7 @@ from pathlib import Path
 from .dxfwrite import write_dxf
 from .params import DXF_VERSIONS, PRESETS, TraceParams
 from .pipeline import run_file
+from . import settings as settings_io
 from .svgwrite import write_svg
 
 
@@ -18,13 +19,28 @@ def build_parser() -> argparse.ArgumentParser:
         prog="img2dxf",
         description="Convert a PNG/JPEG image into a laser-ready DXF outline.",
     )
-    parser.add_argument("image", type=Path, help="source PNG/JPEG")
+    parser.add_argument(
+        "image", type=Path, nargs="?", help="source PNG/JPEG"
+    )
     parser.add_argument(
         "-o", "--output", type=Path,
         help="destination DXF (default: alongside the image)",
     )
     parser.add_argument(
-        "--preset", choices=sorted(PRESETS), help="start from a named preset"
+        "--preset", help="start from a named preset (built-in or one you saved)"
+    )
+    parser.add_argument(
+        "--settings", type=Path,
+        help="load settings from a JSON file written by --save-settings",
+    )
+    parser.add_argument(
+        "--save-settings", type=Path, dest="save_settings", nargs="?",
+        const=Path("-"),
+        help="write the settings used; with no path, beside the image",
+    )
+    parser.add_argument(
+        "--list-presets", action="store_true",
+        help="print the available presets and exit",
     )
 
     frame = parser.add_argument_group("framing")
@@ -113,6 +129,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--tab-mm", type=float, dest="tab_mm", help="width of each bridge, mm"
     )
     machine.add_argument(
+        "--no-order", action="store_true",
+        help="write paths in the order found instead of shortening head travel",
+    )
+    machine.add_argument(
         "--no-arcs", action="store_true",
         help="keep every curve as straight segments instead of fitting arcs",
     )
@@ -138,9 +158,29 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def all_presets() -> dict[str, TraceParams]:
+    """Built-in presets plus the user's own, which win on a name clash."""
+    return {**PRESETS, **settings_io.load_presets()}
+
+
 def params_from_args(args: argparse.Namespace) -> TraceParams:
-    """Fold CLI flags onto the chosen preset, leaving unset flags alone."""
-    params = PRESETS[args.preset] if args.preset else TraceParams()
+    """Fold CLI flags onto the chosen starting point.
+
+    Precedence runs settings file, then preset, then individual flags — most
+    specific last, so a flag always overrides what it was combined with.
+    """
+    params = TraceParams()
+
+    if args.settings:
+        params = settings_io.load(args.settings)
+    elif args.preset:
+        presets = all_presets()
+        if args.preset not in presets:
+            raise SystemExit(
+                f"error: no such preset: {args.preset}\n"
+                f"available: {', '.join(sorted(presets))}"
+            )
+        params = presets[args.preset]
 
     direct = (
         "mode", "threshold", "levels", "blur", "denoise", "close_px", "open_px",
@@ -163,6 +203,8 @@ def params_from_args(args: argparse.Namespace) -> TraceParams:
         overrides["origin"] = "center"
     if args.no_arcs:
         overrides["fit_arcs"] = False
+    if args.no_order:
+        overrides["optimize_order"] = False
     if args.auto_levels:
         overrides["auto_levels"] = True
     if args.no_straighten:
@@ -221,6 +263,14 @@ def _format_from(output: Path | None) -> str:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
+    if args.list_presets:
+        for name in sorted(all_presets()):
+            print(name)
+        return 0
+
+    if args.image is None:
+        print("error: an image is required", file=sys.stderr)
+        return 2
     if not args.image.is_file():
         print(f"error: no such image: {args.image}", file=sys.stderr)
         return 2
@@ -235,6 +285,17 @@ def main(argv: list[str] | None = None) -> int:
         write_svg(result.paths, output, params, result.bounds)
     else:
         write_dxf(result.paths, output, params)
+
+    if args.save_settings is not None:
+        # A bare --save-settings means "next to the image", which is where it
+        # will be looked for again.
+        target = (
+            settings_io.companion_path(args.image)
+            if str(args.save_settings) == "-"
+            else args.save_settings
+        )
+        settings_io.save(params, target)
+        print(f"saved settings to {target}")
 
     print(result.summary())
     print(f"wrote {output}")

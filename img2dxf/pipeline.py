@@ -11,6 +11,7 @@ from .arcfit import fit_bulges, fit_circle
 from .detail import resolve_detail, supersample
 from .geometry import Bounds, Path, bounds_of, pixels_per_mm, to_millimetres
 from .kerf import offset_paths
+from .order import order_paths, travel_length
 from .params import TraceParams
 from .preprocess import binarize, load_image, prepare, to_grayscale
 from .straighten import straighten_paths
@@ -67,6 +68,9 @@ class TraceResult:
     detail_factor: int = 1
     """The supersampling factor this run used."""
 
+    travel_mm: float = 0.0
+    """Distance the head moves between paths, in the order they are written."""
+
     @property
     def arc_count(self) -> int:
         """Arcs and whole circles recovered by the fitter."""
@@ -88,6 +92,8 @@ class TraceResult:
             text += " | tabbed"
         elif self.arc_count:
             text += f" | {self.arc_count} arcs"
+        if self.travel_mm:
+            text += f" | {self.travel_mm / 1000:.2f} m travel"
         if self.discarded:
             text += f" | {len(self.discarded)} dropped"
         if not self.fits_bed and self.bed_size_mm:
@@ -158,6 +164,11 @@ def run(image_rgb: np.ndarray, params: TraceParams) -> TraceResult:
     # paying for the arc fit on every tile.
     paths = tile_paths(paths, params.copies_x, params.copies_y, params.tile_gap_mm)
 
+    # Ordering is last: tiling multiplies the number of paths, and that is
+    # exactly when the travel between them starts to dominate the job.
+    if params.optimize_order:
+        paths = order_paths(paths)
+
     bounds = bounds_of(paths)
     bed = (params.bed_width_mm, params.bed_height_mm) if params.has_bed else None
 
@@ -170,6 +181,7 @@ def run(image_rgb: np.ndarray, params: TraceParams) -> TraceResult:
         px_per_mm=px_per_mm,
         image_size_px=(width_px, height_px),
         detail_factor=factor,
+        travel_mm=travel_length(paths),
         bounds=bounds,
         fits_bed=_fits(bounds, bed),
         bed_size_mm=bed,
