@@ -18,6 +18,10 @@ that LightBurn, RDWorks and LaserCAD import at true millimetre scale.
 [User guide](#user-guide) ·
 [Troubleshooting](#troubleshooting)
 
+<br>
+
+<img src="docs/screenshot.png" alt="img2dxf tracing a badge logo: the settings panel on the left, and the traced cut paths drawn over the artwork on the right" width="900">
+
 </div>
 
 ---
@@ -333,6 +337,21 @@ On macOS/Linux use `.venv/bin/python`. Tkinter must be available in your Python.
 .\.venv\Scripts\python.exe -m pip install pyinstaller
 .\.venv\Scripts\python.exe packaging\build.py     # produces dist\img2dxf.exe
 ```
+
+## Publish a release
+
+One command checks the repo, runs the tests, bumps the version everywhere it appears
+(`pyproject.toml`, `img2dxf/__init__.py`, the README badge), builds the exe, then commits,
+tags, pushes and creates the GitHub release with `img2dxf.exe` attached:
+
+```powershell
+.\.venv\Scripts\python.exe packaging\release.py 0.2.0 --dry-run   # checks and tests only
+.\.venv\Scripts\python.exe packaging\release.py 0.2.0             # the real thing
+```
+
+It needs the [GitHub CLI](https://cli.github.com/), logged in once with `gh auth login`,
+and a clean `main` that is up to date with GitHub. Release notes are generated from the
+commits; pass `--notes notes.md` to write your own.
 
 ## Run the tests
 
